@@ -1,0 +1,22 @@
+# Секретные данные
+config.py
+
+# Базы данных
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Виртуальное окружение
+venv/
+.venv/
+
+# Логи
+*.log
+
+# Резервные копии
+*.bak
+*.backup
