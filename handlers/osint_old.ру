@@ -1,0 +1,1031 @@
+import asyncio
+import logging
+import random
+import re
+import time
+
+from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+# =========================
+# COOLDOWN CALLBACK-КНОПОК
+# =========================
+
+callback_cooldowns: dict[tuple[int, str], float] = {}
+CALLBACK_COOLDOWN = 0.7
+
+
+# =========================
+# ТАЙМЕР ОЖИДАНИЯ ПОИСКА
+# =========================
+
+SEARCH_INPUT_TIMEOUT = 180
+SEARCH_TIMER_UPDATE_INTERVAL = 10
+
+search_timer_tasks: dict[int, asyncio.Task] = {}
+search_timer_messages: dict[int, Message] = {}
+
+
+# =========================
+# СОСТОЯНИЯ ПОИСКА
+# =========================
+
+class OsintSearchState(StatesGroup):
+    waiting_for_phone = State()
+    waiting_for_username = State()
+    waiting_for_telegram_id = State()
+
+
+# =========================
+# ОГРАНИЧЕНИЯ ВАЛИДАЦИИ
+# =========================
+
+PHONE_MIN_LENGTH = 10
+PHONE_MAX_LENGTH = 15
+
+USERNAME_MIN_LENGTH = 5
+USERNAME_MAX_LENGTH = 32
+
+TELEGRAM_ID_MAX_LENGTH = 20
+
+
+# =========================
+# КЛАВИАТУРЫ
+# =========================
+
+def get_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="back_to_main",
+                )
+            ]
+        ]
+    )
+
+
+def get_search_type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📱 По номеру телефона",
+                    callback_data="osint_phone",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👤 По username",
+                    callback_data="osint_username",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🆔 По Telegram ID",
+                    callback_data="osint_telegram_id",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="back_to_main",
+                )
+            ],
+        ]
+    )
+
+
+def get_result_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Повторить поиск",
+                    callback_data="osint_repeat",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔎 Другой тип поиска",
+                    callback_data="osint_scan",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏠 Главное меню",
+                    callback_data="back_to_main",
+                )
+            ],
+        ]
+    )
+
+
+# =========================
+# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ
+# =========================
+
+async def safe_edit_message(
+    callback: CallbackQuery,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str = "HTML",
+) -> None:
+    if callback.message is None:
+        return
+
+    try:
+        await callback.message.edit_text(
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            return
+
+        logger.exception(
+            "Ошибка редактирования сообщения"
+        )
+        raise
+
+
+# =========================
+# ПРОВЕРКА COOLDOWN
+# =========================
+
+async def check_callback_cooldown(
+    callback: CallbackQuery,
+) -> bool:
+    user_id = callback.from_user.id
+    callback_data = callback.data or ""
+
+    current_time = time.monotonic()
+
+    cooldown_key = (
+        user_id,
+        callback_data,
+    )
+
+    last_time = callback_cooldowns.get(
+        cooldown_key,
+    )
+
+    if (
+        last_time is not None
+        and current_time - last_time < CALLBACK_COOLDOWN
+    ):
+        try:
+            await callback.answer()
+
+        except TelegramBadRequest as error:
+            error_text = str(error).lower()
+
+            if (
+                "query is too old" in error_text
+                or "query id is invalid" in error_text
+                or "response timeout expired" in error_text
+            ):
+                return False
+
+            raise
+
+        return False
+
+    callback_cooldowns[cooldown_key] = current_time
+    return True
+
+
+# =========================
+# УПРАВЛЕНИЕ ТАЙМЕРОМ
+# =========================
+
+async def cancel_search_timer(
+    user_id: int,
+    delete_message: bool = True,
+) -> None:
+    task = search_timer_tasks.pop(
+        user_id,
+        None,
+    )
+
+    if task is not None and not task.done():
+        task.cancel()
+
+    timer_message = search_timer_messages.pop(
+        user_id,
+        None,
+    )
+
+    if timer_message is None or not delete_message:
+        return
+
+    try:
+        await timer_message.delete()
+
+    except TelegramBadRequest:
+        pass
+
+    except Exception:
+        logger.exception(
+            "Ошибка удаления сообщения таймера"
+        )
+
+
+def get_timer_interface(
+    remaining: int,
+    animation_step: int,
+) -> str:
+    minutes = remaining // 60
+    seconds = remaining % 60
+
+    indicators = [
+        "● ○ ○ ○",
+        "● ● ○ ○",
+        "● ● ● ○",
+        "● ● ● ●",
+    ]
+
+    indicator = indicators[
+        animation_step % len(indicators)
+    ]
+
+    if remaining <= 20:
+        status = (
+            "⚠️ <b>Время почти вышло</b>\n\n"
+            "Отправьте данные, чтобы продолжить поиск."
+        )
+
+    elif remaining <= 120:
+        status = (
+            "🟡 <b>Ожидание поискового запроса</b>\n\n"
+            "Данные ещё не получены."
+        )
+
+    else:
+        status = (
+            "⏳ <b>Ожидание поискового запроса</b>\n\n"
+            "Введите данные для начала поиска."
+        )
+
+    return (
+        f"{status}\n\n"
+        f"{indicator}\n\n"
+        f"⏱ <b>Осталось:</b> "
+        f"{minutes:02d}:{seconds:02d}"
+    )
+
+
+async def start_search_timer(
+    message: Message,
+    state: FSMContext,
+    user_id: int,
+) -> None:
+    await cancel_search_timer(user_id)
+
+    timer_message = await message.answer(
+        get_timer_interface(
+            remaining=SEARCH_INPUT_TIMEOUT,
+            animation_step=0,
+        ),
+        parse_mode="HTML",
+        reply_markup=get_back_keyboard(),
+    )
+
+    search_timer_messages[user_id] = timer_message
+
+    async def timer() -> None:
+        remaining = SEARCH_INPUT_TIMEOUT
+        animation_step = 0
+
+        try:
+            while remaining > 0:
+                await asyncio.sleep(
+                    SEARCH_TIMER_UPDATE_INTERVAL
+                )
+
+                remaining -= SEARCH_TIMER_UPDATE_INTERVAL
+                animation_step += 1
+
+                current_state = await state.get_state()
+
+                if current_state not in {
+                    OsintSearchState.waiting_for_phone.state,
+                    OsintSearchState.waiting_for_username.state,
+                    OsintSearchState.waiting_for_telegram_id.state,
+                }:
+                    return
+
+                if remaining <= 0:
+                    await state.clear()
+
+                    search_timer_messages.pop(
+                        user_id,
+                        None,
+                    )
+
+                    try:
+                        await timer_message.edit_text(
+                            (
+                                "⌛ <b>Время ожидания истекло</b>\n\n"
+                                "Поисковый запрос не был получен.\n\n"
+                                "Выберите формат поиска заново."
+                            ),
+                            parse_mode="HTML",
+                            reply_markup=(
+                                get_search_type_keyboard()
+                            ),
+                        )
+
+                    except TelegramBadRequest as error:
+                        if (
+                            "message is not modified"
+                            not in str(error).lower()
+                        ):
+                            raise
+
+                    return
+
+                try:
+                    await timer_message.edit_text(
+                        get_timer_interface(
+                            remaining=remaining,
+                            animation_step=animation_step,
+                        ),
+                        parse_mode="HTML",
+                        reply_markup=get_back_keyboard(),
+                    )
+
+                except TelegramBadRequest as error:
+                    if (
+                        "message is not modified"
+                        not in str(error).lower()
+                    ):
+                        raise
+
+        except asyncio.CancelledError:
+            return
+
+        except Exception:
+            logger.exception(
+                "Ошибка таймера ожидания поиска"
+            )
+
+        finally:
+            current_task = search_timer_tasks.get(
+                user_id,
+            )
+
+            if current_task is asyncio.current_task():
+                search_timer_tasks.pop(
+                    user_id,
+                    None,
+                )
+
+    task = asyncio.create_task(timer())
+
+    search_timer_tasks[user_id] = task
+
+
+# =========================
+# ВАЛИДАЦИЯ НОМЕРА
+# =========================
+
+def validate_phone(
+    value: str,
+) -> tuple[bool, str]:
+    phone = value.strip()
+
+    if phone.startswith("+"):
+        phone = phone[1:]
+
+    if not phone:
+        return (
+            False,
+            "⚠️ Номер телефона не указан.",
+        )
+
+    if not phone.isdigit():
+        return (
+            False,
+            "⚠️ Неверный формат номера.\n\n"
+            "Номер должен содержать только цифры.",
+        )
+
+    if len(phone) < PHONE_MIN_LENGTH:
+        return (
+            False,
+            "⚠️ Недопустимая длина номера.\n\n"
+            f"Минимум: {PHONE_MIN_LENGTH} цифр.",
+        )
+
+    if len(phone) > PHONE_MAX_LENGTH:
+        return (
+            False,
+            "⚠️ Недопустимая длина номера.\n\n"
+            f"Максимум: {PHONE_MAX_LENGTH} цифр.",
+        )
+
+    return True, phone
+
+
+# =========================
+# ВАЛИДАЦИЯ USERNAME
+# =========================
+
+def validate_username(
+    value: str,
+) -> tuple[bool, str]:
+    username = value.strip()
+
+    if username.startswith("@"):
+        username = username[1:]
+
+    if not username:
+        return (
+            False,
+            "⚠️ Username не указан.",
+        )
+
+    if username.startswith("@"):
+        return (
+            False,
+            "⚠️ Неверный формат username.\n\n"
+            "Используйте только один символ @ в начале.",
+        )
+
+    if len(username) < USERNAME_MIN_LENGTH:
+        return (
+            False,
+            "⚠️ Недопустимая длина username.\n\n"
+            f"Минимум: {USERNAME_MIN_LENGTH} символов.",
+        )
+
+    if len(username) > USERNAME_MAX_LENGTH:
+        return (
+            False,
+            "⚠️ Недопустимая длина username.\n\n"
+            f"Максимум: {USERNAME_MAX_LENGTH} символа.",
+        )
+
+    if not re.fullmatch(
+        r"[A-Za-z0-9_]+",
+        username,
+    ):
+        return (
+            False,
+            "⚠️ Неверный формат username.\n\n"
+            "Допустимы только латинские буквы, "
+            "цифры и символ подчёркивания.",
+        )
+
+    return True, username
+
+
+# =========================
+# ВАЛИДАЦИЯ TELEGRAM ID
+# =========================
+
+def validate_telegram_id(
+    value: str,
+) -> tuple[bool, str]:
+    telegram_id = value.strip()
+
+    if not telegram_id:
+        return (
+            False,
+            "⚠️ Telegram ID не указан.",
+        )
+
+    if not telegram_id.isdigit():
+        return (
+            False,
+            "⚠️ Неверный формат Telegram ID.\n\n"
+            "Telegram ID должен содержать только цифры.",
+        )
+
+    if len(telegram_id) > TELEGRAM_ID_MAX_LENGTH:
+        return (
+            False,
+            "⚠️ Недопустимая длина Telegram ID.\n\n"
+            f"Максимум: {TELEGRAM_ID_MAX_LENGTH} цифр.",
+        )
+
+    return True, telegram_id
+
+
+# =========================
+# OSINT МЕНЮ
+# =========================
+
+@router.message(Command("osint"))
+async def cmd_osint(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    user = message.from_user
+
+    if user is not None:
+        await cancel_search_timer(user.id)
+
+    await state.clear()
+
+    await message.answer(
+        (
+            "🔎 <b>OSINT-сканер</b>\n\n"
+            "Выберите формат поиска:"
+        ),
+        parse_mode="HTML",
+        reply_markup=get_search_type_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "osint_scan")
+async def cb_osint_scan(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    if not await check_callback_cooldown(
+        callback,
+    ):
+        return
+
+    await cancel_search_timer(
+        callback.from_user.id,
+    )
+
+    await callback.answer()
+    await state.clear()
+
+    await safe_edit_message(
+        callback=callback,
+        text=(
+            "🔎 <b>OSINT-сканер</b>\n\n"
+            "Выберите, по какому формату "
+            "выполнить поиск:"
+        ),
+        reply_markup=get_search_type_keyboard(),
+    )
+
+
+# =========================
+# ВЫБОР ТИПА ПОИСКА
+# =========================
+
+@router.callback_query(F.data == "osint_phone")
+async def cb_osint_phone(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    if not await check_callback_cooldown(
+        callback,
+    ):
+        return
+
+    await callback.answer()
+
+    await state.set_state(
+        OsintSearchState.waiting_for_phone,
+    )
+
+    if callback.message is not None:
+        await start_search_timer(
+            message=callback.message,
+            state=state,
+            user_id=callback.from_user.id,
+        )
+
+
+@router.callback_query(F.data == "osint_username")
+async def cb_osint_username(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    if not await check_callback_cooldown(
+        callback,
+    ):
+        return
+
+    await callback.answer()
+
+    await state.set_state(
+        OsintSearchState.waiting_for_username,
+    )
+
+    if callback.message is not None:
+        await start_search_timer(
+            message=callback.message,
+            state=state,
+            user_id=callback.from_user.id,
+        )
+
+
+@router.callback_query(
+    F.data == "osint_telegram_id",
+)
+async def cb_osint_telegram_id(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    if not await check_callback_cooldown(
+        callback,
+    ):
+        return
+
+    await callback.answer()
+
+    await state.set_state(
+        OsintSearchState.waiting_for_telegram_id,
+    )
+
+    if callback.message is not None:
+        await start_search_timer(
+            message=callback.message,
+            state=state,
+            user_id=callback.from_user.id,
+        )
+
+
+# =========================
+# НЕ ТЕКСТ ВО ВРЕМЯ ПОИСКА
+# =========================
+
+@router.message(
+    StateFilter(
+        OsintSearchState.waiting_for_phone,
+        OsintSearchState.waiting_for_username,
+        OsintSearchState.waiting_for_telegram_id,
+    ),
+    ~F.text,
+)
+async def invalid_search_content(
+    message: Message,
+) -> None:
+    await message.answer(
+        (
+            "⚠️ Неверный формат.\n\n"
+            "Отправьте поисковый запрос "
+            "обычным текстовым сообщением."
+        )
+    )
+
+
+# =========================
+# ОТМЕНА ПОИСКА
+# =========================
+
+@router.message(
+    Command("cancel"),
+    StateFilter(
+        OsintSearchState.waiting_for_phone,
+        OsintSearchState.waiting_for_username,
+        OsintSearchState.waiting_for_telegram_id,
+    ),
+)
+async def cancel_search(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    user = message.from_user
+
+    if user is not None:
+        await cancel_search_timer(user.id)
+
+    await state.clear()
+
+    await message.answer(
+        (
+            "🚫 <b>Поиск отменён</b>\n\n"
+            "Выберите формат нового поиска:"
+        ),
+        parse_mode="HTML",
+        reply_markup=get_search_type_keyboard(),
+    )
+
+
+# =========================
+# ОБРАБОТКА НОМЕРА
+# =========================
+
+@router.message(
+    OsintSearchState.waiting_for_phone,
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_phone(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    is_valid, result = validate_phone(
+        message.text,
+    )
+
+    if not is_valid:
+        await message.answer(result)
+        return
+
+    user = message.from_user
+
+    if user is not None:
+        await cancel_search_timer(user.id)
+
+    await state.clear()
+
+    await run_scan(
+        message=message,
+        search_type="📱 Номер",
+        search_value=f"+{result}",
+    )
+
+
+# =========================
+# ОБРАБОТКА USERNAME
+# =========================
+
+@router.message(
+    OsintSearchState.waiting_for_username,
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_username(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    is_valid, result = validate_username(
+        message.text,
+    )
+
+    if not is_valid:
+        await message.answer(result)
+        return
+
+    user = message.from_user
+
+    if user is not None:
+        await cancel_search_timer(user.id)
+
+    await state.clear()
+
+    await run_scan(
+        message=message,
+        search_type="👤 Username",
+        search_value=f"@{result}",
+    )
+
+
+# =========================
+# ОБРАБОТКА TELEGRAM ID
+# =========================
+
+@router.message(
+    OsintSearchState.waiting_for_telegram_id,
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_telegram_id(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    is_valid, result = validate_telegram_id(
+        message.text,
+    )
+
+    if not is_valid:
+        await message.answer(result)
+        return
+
+    user = message.from_user
+
+    if user is not None:
+        await cancel_search_timer(user.id)
+
+    await state.clear()
+
+    await run_scan(
+        message=message,
+        search_type="🆔 Telegram ID",
+        search_value=result,
+    )
+
+
+# =========================
+# ПОВТОРИТЬ ПОИСК
+# =========================
+
+@router.callback_query(F.data == "osint_repeat")
+async def cb_osint_repeat(
+    callback: CallbackQuery,
+) -> None:
+    if not await check_callback_cooldown(
+        callback,
+    ):
+        return
+
+    await callback.answer()
+
+    await safe_edit_message(
+        callback=callback,
+        text=(
+            "🔎 <b>OSINT-сканер</b>\n\n"
+            "Выберите формат нового поиска:"
+        ),
+        reply_markup=get_search_type_keyboard(),
+    )
+
+
+# =========================
+# ФОРМИРОВАНИЕ РЕЗУЛЬТАТА
+# =========================
+
+def get_search_result_text(
+    search_type: str,
+    search_value: str,
+    record_found: bool,
+) -> str:
+    if record_found:
+        status = "🟢 Данные обнаружены"
+        sources = random.randint(1, 5)
+        matches = random.randint(1, 3)
+
+        details = (
+            "📥 Найденные данные временно "
+            "имитируются."
+        )
+    else:
+        status = "🟡 Данные не обнаружены"
+        sources = random.randint(3, 8)
+        matches = 0
+
+        details = (
+            "🌐 Открытые источники проверены.\n"
+            "Совпадений пока не найдено."
+        )
+
+    return (
+        "🔎 <b>OSINT-сканер</b>\n\n"
+        f"{search_type}: "
+        f"<code>{search_value}</code>\n\n"
+        "📊 <b>Результат анализа</b>\n\n"
+        f"🗂 <b>Статус:</b> {status}\n"
+        f"🔍 <b>Проверено источников:</b> {sources}\n"
+        f"🧩 <b>Совпадений:</b> {matches}\n\n"
+        "━━━━━━━━━━━━\n"
+        f"{details}\n\n"
+        "⚙️ <i>Реальные источники будут "
+        "подключены позже.</i>"
+    )
+
+
+async def run_scan(
+    message: Message,
+    search_type: str,
+    search_value: str,
+) -> None:
+    progress_message = await message.answer(
+        (
+            "🔎 <b>OSINT-сканер</b>\n\n"
+            f"{search_type}: "
+            f"<code>{search_value}</code>\n\n"
+            "📡 Подключение к источникам •"
+        ),
+        parse_mode="HTML",
+    )
+
+    def get_progress_text(
+        status: str,
+    ) -> str:
+        return (
+            "🔎 <b>OSINT-сканер</b>\n\n"
+            f"{search_type}: "
+            f"<code>{search_value}</code>\n\n"
+            f"{status}"
+        )
+
+    async def update_progress(
+        status: str,
+        delay: float,
+    ) -> None:
+        await asyncio.sleep(delay)
+
+        try:
+            await progress_message.edit_text(
+                get_progress_text(status),
+                parse_mode="HTML",
+            )
+
+        except TelegramBadRequest as error:
+            if (
+                "message is not modified"
+                not in str(error).lower()
+            ):
+                raise
+
+    try:
+        await update_progress(
+            "🗄 Проверка базы данных ••",
+            0.8,
+        )
+
+        await asyncio.sleep(1.2)
+
+        record_found = random.choice(
+            [True, False]
+        )
+
+        if record_found:
+            await progress_message.edit_text(
+                get_progress_text(
+                    "📥 Получение данных •••"
+                ),
+                parse_mode="HTML",
+            )
+
+            await asyncio.sleep(1.5)
+
+        else:
+            await progress_message.edit_text(
+                get_progress_text(
+                    "🌐 Поиск по открытым источникам •••"
+                ),
+                parse_mode="HTML",
+            )
+
+            await asyncio.sleep(2.0)
+
+        await progress_message.edit_text(
+            get_progress_text(
+                "🧩 Анализ совпадений ••••"
+            ),
+            parse_mode="HTML",
+        )
+
+        await asyncio.sleep(1.0)
+
+        await progress_message.edit_text(
+            get_search_result_text(
+                search_type=search_type,
+                search_value=search_value,
+                record_found=record_found,
+            ),
+            parse_mode="HTML",
+            reply_markup=get_result_keyboard(),
+        )
+
+    except Exception:
+        logger.exception(
+            "Ошибка выполнения OSINT-поиска"
+        )
+
+        try:
+            await progress_message.edit_text(
+                (
+                    "⚠️ Во время обработки запроса "
+                    "произошла ошибка."
+                ),
+                reply_markup=get_result_keyboard(),
+            )
+
+        except TelegramBadRequest:
+            pass
+
+
+# =========================
+# ФАЙЛЫ
+# =========================
+
+@router.message(Command("file"))
+async def send_file(
+    message: Message,
+) -> None:
+    try:
+        file = FSInputFile(
+            "files/example.txt",
+        )
+
+        await message.answer_document(file)
+
+    except Exception:
+        logger.exception(
+            "Ошибка отправки файла"
+        )
+
+        await message.answer(
+            "⚠️ Файл примера временно недоступен."
+        )

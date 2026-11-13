@@ -1,7 +1,7 @@
 from datetime import (
     datetime,
     timedelta,
-    timezone
+    timezone,
 )
 
 from database.db import connect_db
@@ -14,7 +14,7 @@ MSK = timezone(
 
 ALLOWED_NOTIFICATION_TYPES = {
     "vpn",
-    "osint"
+    "osint",
 }
 
 
@@ -26,7 +26,7 @@ def get_current_timestamp() -> str:
 
 async def subscribe_user(
     user_id: int,
-    notification_type: str
+    notification_type: str,
 ) -> str:
 
     if (
@@ -40,6 +40,34 @@ async def subscribe_user(
     now = get_current_timestamp()
 
     async with connect_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO user_subscriptions (
+                user_id,
+                notification_type,
+                is_active,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, 1, ?, ?)
+            ON CONFLICT (
+                user_id,
+                notification_type
+            ) DO NOTHING
+            """,
+            (
+                user_id,
+                notification_type,
+                now,
+                now,
+            ),
+        )
+
+        if cursor.rowcount == 1:
+            await db.commit()
+
+            return "new"
+
         async with db.execute(
             """
             SELECT is_active
@@ -49,36 +77,14 @@ async def subscribe_user(
             """,
             (
                 user_id,
-                notification_type
-            )
-        ) as cursor:
-            row = await cursor.fetchone()
+                notification_type,
+            ),
+        ) as select_cursor:
+            row = await select_cursor.fetchone()
 
-        if row is None:
-            await db.execute(
-                """
-                INSERT INTO user_subscriptions (
-                    user_id,
-                    notification_type,
-                    is_active,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, 1, ?, ?)
-                """,
-                (
-                    user_id,
-                    notification_type,
-                    now,
-                    now
-                )
-            )
-
-            await db.commit()
-
-            return "new"
-
-        if bool(row["is_active"]):
+        if row is not None and bool(
+            row["is_active"]
+        ):
             return "already_active"
 
         await db.execute(
@@ -93,8 +99,8 @@ async def subscribe_user(
             (
                 now,
                 user_id,
-                notification_type
-            )
+                notification_type,
+            ),
         )
 
         await db.commit()
@@ -104,7 +110,7 @@ async def subscribe_user(
 
 async def unsubscribe_user(
     user_id: int,
-    notification_type: str
+    notification_type: str,
 ) -> bool:
 
     if (
@@ -131,8 +137,8 @@ async def unsubscribe_user(
             (
                 now,
                 user_id,
-                notification_type
-            )
+                notification_type,
+            ),
         )
 
         await db.commit()
@@ -141,7 +147,7 @@ async def unsubscribe_user(
 
 
 async def get_subscribers(
-    notification_type: str
+    notification_type: str,
 ) -> list[int]:
 
     if (
@@ -160,7 +166,7 @@ async def get_subscribers(
             WHERE notification_type = ?
             AND is_active = 1
             """,
-            (notification_type,)
+            (notification_type,),
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -171,7 +177,7 @@ async def get_subscribers(
 
 
 async def get_user_subscriptions(
-    user_id: int
+    user_id: int,
 ) -> dict[str, bool]:
 
     subscriptions = {
@@ -189,7 +195,7 @@ async def get_user_subscriptions(
             FROM user_subscriptions
             WHERE user_id = ?
             """,
-            (user_id,)
+            (user_id,),
         ) as cursor:
             rows = await cursor.fetchall()
 
@@ -208,5 +214,4 @@ async def get_user_subscriptions(
                 row["is_active"]
             )
 
-    return subscriptions
-            
+    return subscriptions            

@@ -4,11 +4,11 @@ import logging
 from aiogram import Bot
 from aiogram.exceptions import (
     TelegramAPIError,
-    TelegramForbiddenError
+    TelegramForbiddenError,
 )
 
 from repositories.subscription_repository import (
-    get_subscribers
+    get_subscribers,
 )
 
 
@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 async def send_notification(
     bot: Bot,
     notification_type: str,
-    text: str
+    text: str,
 ) -> dict:
 
     subscribers = await get_subscribers(
-        notification_type
+        notification_type,
     )
 
     sent = 0
@@ -32,7 +32,7 @@ async def send_notification(
         try:
             await bot.send_message(
                 chat_id=user_id,
-                text=text
+                text=text,
             )
 
             sent += 1
@@ -42,7 +42,7 @@ async def send_notification(
         except TelegramForbiddenError:
             logger.warning(
                 "Пользователь %s заблокировал бота.",
-                user_id
+                user_id,
             )
 
             failed += 1
@@ -50,7 +50,7 @@ async def send_notification(
         except TelegramAPIError:
             logger.exception(
                 "Ошибка Telegram API для %s",
-                user_id
+                user_id,
             )
 
             failed += 1
@@ -58,7 +58,7 @@ async def send_notification(
         except Exception:
             logger.exception(
                 "Неожиданная ошибка для %s",
-                user_id
+                user_id,
             )
 
             failed += 1
@@ -66,6 +66,5 @@ async def send_notification(
     return {
         "total": len(subscribers),
         "sent": sent,
-        "failed": failed
+        "failed": failed,
     }
-        
