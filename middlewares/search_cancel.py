@@ -11,6 +11,14 @@ from handlers.osint import (
 from handlers.subscriptions import BroadcastState
 
 
+# Кнопки, которые должны отменять активное действие
+CANCEL_BUTTONS = {
+    "🏠 Главное меню",
+    "👤 Профиль",
+    "🆘 Поддержка",
+}
+
+
 class SearchCancelMiddleware(BaseMiddleware):
     async def __call__(
         self,
@@ -24,17 +32,13 @@ class SearchCancelMiddleware(BaseMiddleware):
         if not event.text:
             return await handler(event, data)
 
-        if not event.text.startswith("/"):
-            return await handler(event, data)
-
-        command = event.text.split()[0].split("@")[0]
-
-        if command == "/cancel":
-            return await handler(event, data)
-
         state: FSMContext | None = data.get("state")
 
         if state is None:
+            return await handler(event, data)
+
+        # /cancel обрабатывается отдельным handler'ом
+        if event.text.startswith("/cancel"):
             return await handler(event, data)
 
         current_state = await state.get_state()
@@ -47,7 +51,16 @@ class SearchCancelMiddleware(BaseMiddleware):
             BroadcastState.waiting_for_text.state,
         }
 
-        if current_state in cancellable_states:
+        # Команды всегда отменяют активное состояние
+        is_command = event.text.startswith("/")
+
+        # Reply-кнопки меню тоже отменяют активное состояние
+        is_cancel_button = event.text in CANCEL_BUTTONS
+
+        if (
+            current_state in cancellable_states
+            and (is_command or is_cancel_button)
+        ):
             user = event.from_user
 
             if user is not None:
@@ -56,4 +69,3 @@ class SearchCancelMiddleware(BaseMiddleware):
             await state.clear()
 
         return await handler(event, data)
-        

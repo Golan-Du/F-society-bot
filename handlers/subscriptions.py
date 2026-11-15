@@ -1,4 +1,5 @@
 import logging
+from html import escape
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -46,9 +47,7 @@ async def check_admin(message: Message) -> bool:
     user = message.from_user
 
     if user is None or not is_admin(user.id):
-        await message.answer(
-            "⛔ Недостаточно прав."
-        )
+        await message.answer("⛔ Недостаточно прав.")
         return False
 
     return True
@@ -96,15 +95,13 @@ async def handle_subscribe(
 
     except Exception:
         logger.exception(
-            "Ошибка подписки пользователя %s "
-            "на уведомления %s",
+            "Ошибка подписки пользователя %s на уведомления %s",
             user.id,
             notification_type,
         )
 
         await message.answer(
-            "⚠️ Не удалось оформить подписку. "
-            "Попробуйте позже."
+            "⚠️ Не удалось оформить подписку. Попробуйте позже."
         )
 
 
@@ -128,8 +125,7 @@ async def handle_unsubscribe(
 
         if success:
             await message.answer(
-                f"🔕 Вы отписались от уведомлений "
-                f"{notification_name}."
+                f"🔕 Вы отписались от уведомлений {notification_name}."
             )
         else:
             await message.answer(
@@ -139,15 +135,13 @@ async def handle_unsubscribe(
 
     except Exception:
         logger.exception(
-            "Ошибка отписки пользователя %s "
-            "от уведомлений %s",
+            "Ошибка отписки пользователя %s от уведомлений %s",
             user.id,
             notification_type,
         )
 
         await message.answer(
-            "⚠️ Не удалось выполнить отписку. "
-            "Попробуйте позже."
+            "⚠️ Не удалось выполнить отписку. Попробуйте позже."
         )
 
 
@@ -156,9 +150,7 @@ async def handle_unsubscribe(
 # =========================
 
 @router.message(Command("subscribe"))
-async def subscribe_menu(
-    message: Message,
-) -> None:
+async def subscribe_menu(message: Message) -> None:
     await message.answer(
         "🔔 <b>Управление уведомлениями</b>\n\n"
         "🛡 <b>VPN:</b>\n"
@@ -172,9 +164,7 @@ async def subscribe_menu(
 
 
 @router.message(Command("unsubscribe"))
-async def unsubscribe_menu(
-    message: Message,
-) -> None:
+async def unsubscribe_menu(message: Message) -> None:
     await message.answer(
         "🔕 <b>Отмена подписок</b>\n\n"
         "🛡 VPN:\n"
@@ -186,9 +176,7 @@ async def unsubscribe_menu(
 
 
 @router.message(Command("subscribe_vpn"))
-async def subscribe_vpn(
-    message: Message,
-) -> None:
+async def subscribe_vpn(message: Message) -> None:
     await handle_subscribe(
         message,
         VPN_NOTIFICATION_TYPE,
@@ -197,9 +185,7 @@ async def subscribe_vpn(
 
 
 @router.message(Command("unsubscribe_vpn"))
-async def unsubscribe_vpn(
-    message: Message,
-) -> None:
+async def unsubscribe_vpn(message: Message) -> None:
     await handle_unsubscribe(
         message,
         VPN_NOTIFICATION_TYPE,
@@ -208,9 +194,7 @@ async def unsubscribe_vpn(
 
 
 @router.message(Command("subscribe_osint"))
-async def subscribe_osint(
-    message: Message,
-) -> None:
+async def subscribe_osint(message: Message) -> None:
     await handle_subscribe(
         message,
         OSINT_NOTIFICATION_TYPE,
@@ -219,9 +203,7 @@ async def subscribe_osint(
 
 
 @router.message(Command("unsubscribe_osint"))
-async def unsubscribe_osint(
-    message: Message,
-) -> None:
+async def unsubscribe_osint(message: Message) -> None:
     await handle_unsubscribe(
         message,
         OSINT_NOTIFICATION_TYPE,
@@ -234,9 +216,7 @@ async def unsubscribe_osint(
 # =========================
 
 @router.message(Command("subscribers"))
-async def subscribers_cmd(
-    message: Message,
-) -> None:
+async def subscribers_cmd(message: Message) -> None:
     if not await check_admin(message):
         return
 
@@ -257,9 +237,7 @@ async def subscribers_cmd(
         )
 
     except Exception:
-        logger.exception(
-            "Ошибка получения статистики подписчиков"
-        )
+        logger.exception("Ошибка получения статистики подписчиков")
 
         await message.answer(
             "⚠️ Не удалось получить статистику."
@@ -293,10 +271,7 @@ async def broadcast_cmd(
     )
 
 
-@router.message(
-    BroadcastState.waiting_for_type,
-    F.text,
-)
+@router.message(BroadcastState.waiting_for_type, F.text)
 async def broadcast_select_type(
     message: Message,
     state: FSMContext,
@@ -315,8 +290,7 @@ async def broadcast_select_type(
     if notification_type not in allowed_types:
         await message.answer(
             "⚠️ Неверный тип уведомления.\n\n"
-            "Введите: <code>vpn</code> или "
-            "<code>osint</code>.",
+            "Введите: <code>vpn</code> или <code>osint</code>.",
             parse_mode="HTML",
         )
         return
@@ -335,10 +309,7 @@ async def broadcast_select_type(
     )
 
 
-@router.message(
-    BroadcastState.waiting_for_text,
-    F.text,
-)
+@router.message(BroadcastState.waiting_for_text, F.text)
 async def broadcast_send(
     message: Message,
     state: FSMContext,
@@ -349,10 +320,7 @@ async def broadcast_send(
 
     data = await state.get_data()
 
-    notification_type = data.get(
-        "notification_type",
-    )
-
+    notification_type = data.get("notification_type")
     notification_text = message.text.strip()
 
     if not notification_text:
@@ -374,19 +342,14 @@ async def broadcast_send(
 
         await message.answer(
             "✅ <b>Рассылка завершена</b>\n\n"
-            f"📨 Всего подписчиков: "
-            f"<b>{result['total']}</b>\n"
-            f"✅ Отправлено: "
-            f"<b>{result['sent']}</b>\n"
-            f"❌ Ошибок: "
-            f"<b>{result['failed']}</b>",
+            f"📨 Всего подписчиков: <b>{result['total']}</b>\n"
+            f"✅ Отправлено: <b>{result['sent']}</b>\n"
+            f"❌ Ошибок: <b>{result['failed']}</b>",
             parse_mode="HTML",
         )
 
     except Exception:
-        logger.exception(
-            "Ошибка при выполнении рассылки"
-        )
+        logger.exception("Ошибка при выполнении рассылки")
 
         await message.answer(
             "⚠️ Во время рассылки произошла ошибка."
@@ -401,9 +364,7 @@ async def broadcast_send(
 # =========================
 
 @router.message(Command("banned"))
-async def banned_cmd(
-    message: Message,
-) -> None:
+async def banned_cmd(message: Message) -> None:
     if not await check_admin(message):
         return
 
@@ -427,22 +388,28 @@ async def banned_cmd(
             joined_date = banned_user["joined_date"]
 
             safe_name = (
-                full_name
+                escape(str(full_name))
                 if full_name
                 else "Неизвестно"
             )
 
             safe_username = (
-                f"@{username}"
+                f"@{escape(str(username))}"
                 if username
                 else "Без username"
+            )
+
+            safe_joined_date = (
+                escape(str(joined_date))
+                if joined_date
+                else "Неизвестно"
             )
 
             lines.append(
                 f"🆔 <code>{user_id}</code>\n"
                 f"👤 {safe_name}\n"
                 f"📌 {safe_username}\n"
-                f"📅 Регистрация: {joined_date}\n"
+                f"📅 Регистрация: {safe_joined_date}\n"
             )
 
         await message.answer(
@@ -452,8 +419,7 @@ async def banned_cmd(
 
     except Exception:
         logger.exception(
-            "Ошибка получения списка "
-            "заблокированных пользователей"
+            "Ошибка получения списка заблокированных пользователей"
         )
 
         await message.answer(
@@ -467,9 +433,7 @@ async def banned_cmd(
 # =========================
 
 @router.message(Command("ban"))
-async def ban_user_cmd(
-    message: Message,
-) -> None:
+async def ban_user_cmd(message: Message) -> None:
     if not await check_admin(message):
         return
 
@@ -479,13 +443,9 @@ async def ban_user_cmd(
         else []
     )
 
-    if (
-        len(parts) != 2
-        or not parts[1].isdigit()
-    ):
+    if len(parts) != 2 or not parts[1].isdigit():
         await message.answer(
-            "⚠️ Использование:\n"
-            "<code>/ban USER_ID</code>",
+            "⚠️ Использование:\n<code>/ban USER_ID</code>",
             parse_mode="HTML",
         )
         return
@@ -506,15 +466,12 @@ async def ban_user_cmd(
 
         if not updated:
             await message.answer(
-                "⚠️ Пользователь с таким ID "
-                "не найден."
+                "⚠️ Пользователь с таким ID не найден."
             )
             return
 
         await message.answer(
-            f"🚫 Пользователь "
-            f"<code>{target_user_id}</code> "
-            f"заблокирован.",
+            f"🚫 Пользователь <code>{target_user_id}</code> заблокирован.",
             parse_mode="HTML",
         )
 
@@ -534,9 +491,7 @@ async def ban_user_cmd(
 # =========================
 
 @router.message(Command("unban"))
-async def unban_user_cmd(
-    message: Message,
-) -> None:
+async def unban_user_cmd(message: Message) -> None:
     if not await check_admin(message):
         return
 
@@ -546,13 +501,9 @@ async def unban_user_cmd(
         else []
     )
 
-    if (
-        len(parts) != 2
-        or not parts[1].isdigit()
-    ):
+    if len(parts) != 2 or not parts[1].isdigit():
         await message.answer(
-            "⚠️ Использование:\n"
-            "<code>/unban USER_ID</code>",
+            "⚠️ Использование:\n<code>/unban USER_ID</code>",
             parse_mode="HTML",
         )
         return
@@ -567,15 +518,12 @@ async def unban_user_cmd(
 
         if not updated:
             await message.answer(
-                "⚠️ Пользователь с таким ID "
-                "не найден."
+                "⚠️ Пользователь с таким ID не найден."
             )
             return
 
         await message.answer(
-            f"✅ Пользователь "
-            f"<code>{target_user_id}</code> "
-            f"разблокирован.",
+            f"✅ Пользователь <code>{target_user_id}</code> разблокирован.",
             parse_mode="HTML",
         )
 

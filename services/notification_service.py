@@ -5,12 +5,10 @@ from aiogram import Bot
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramForbiddenError,
+    TelegramRetryAfter,
 )
 
-from repositories.subscription_repository import (
-    get_subscribers,
-)
-
+from repositories.subscription_repository import get_subscribers
 
 logger = logging.getLogger(__name__)
 
@@ -20,47 +18,68 @@ async def send_notification(
     notification_type: str,
     text: str,
 ) -> dict:
-
-    subscribers = await get_subscribers(
-        notification_type,
-    )
+    subscribers = await get_subscribers(notification_type)
 
     sent = 0
     failed = 0
 
     for user_id in subscribers:
-        try:
-            await bot.send_message(
-                chat_id=user_id,
-                text=text,
-            )
+        delivered = False
 
+        for attempt in range(3):
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                )
+
+                delivered = True
+                break
+
+            except TelegramRetryAfter as error:
+                if attempt == 2:
+                    logger.warning(
+                        "Превышено число повторов отправки пользователю %s",
+                        user_id,
+                    )
+                    break
+
+                wait_time = error.retry_after + 0.1
+
+                logger.warning(
+                    "Telegram ограничил отправку. "
+                    "Ожидание %.2f сек. User: %s",
+                    wait_time,
+                    user_id,
+                )
+
+                await asyncio.sleep(wait_time)
+
+            except TelegramForbiddenError:
+                logger.warning(
+                    "Пользователь %s заблокировал бота.",
+                    user_id,
+                )
+                break
+
+            except TelegramAPIError:
+                logger.exception(
+                    "Ошибка Telegram API для пользователя %s",
+                    user_id,
+                )
+                break
+
+            except Exception:
+                logger.exception(
+                    "Неожиданная ошибка отправки пользователю %s",
+                    user_id,
+                )
+                break
+
+        if delivered:
             sent += 1
-
             await asyncio.sleep(0.05)
-
-        except TelegramForbiddenError:
-            logger.warning(
-                "Пользователь %s заблокировал бота.",
-                user_id,
-            )
-
-            failed += 1
-
-        except TelegramAPIError:
-            logger.exception(
-                "Ошибка Telegram API для %s",
-                user_id,
-            )
-
-            failed += 1
-
-        except Exception:
-            logger.exception(
-                "Неожиданная ошибка для %s",
-                user_id,
-            )
-
+        else:
             failed += 1
 
     return {

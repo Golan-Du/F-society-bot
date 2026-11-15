@@ -26,7 +26,12 @@ router = Router()
 # =========================
 
 callback_cooldowns: dict[tuple[int, str], float] = {}
+
 CALLBACK_COOLDOWN = 0.7
+CALLBACK_COOLDOWN_CLEANUP_INTERVAL = 128
+CALLBACK_COOLDOWN_MAX_AGE = 60.0
+
+_callback_check_counter = 0
 
 
 # =========================
@@ -242,16 +247,41 @@ async def safe_edit_message(
 
 
 # =========================
-# COOLDOWN
+# ОЧИСТКА COOLDOWN
 # =========================
+
+def cleanup_callback_cooldowns(
+    current_time: float,
+) -> None:
+    expired_keys = [
+        key
+        for key, last_time in callback_cooldowns.items()
+        if current_time - last_time > CALLBACK_COOLDOWN_MAX_AGE
+    ]
+
+    for key in expired_keys:
+        callback_cooldowns.pop(key, None)
+
 
 async def check_callback_cooldown(
     callback: CallbackQuery,
 ) -> bool:
+    global _callback_check_counter
+
     user_id = callback.from_user.id
     callback_data = callback.data or ""
 
     current_time = time.monotonic()
+
+    _callback_check_counter += 1
+
+    if (
+        _callback_check_counter
+        >= CALLBACK_COOLDOWN_CLEANUP_INTERVAL
+    ):
+        cleanup_callback_cooldowns(current_time)
+        _callback_check_counter = 0
+
     cooldown_key = (
         user_id,
         callback_data,
