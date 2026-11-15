@@ -15,6 +15,8 @@ from aiogram.types import (
 )
 
 from database.db import add_user_to_db
+from admin_config import ADMIN_IDS
+from .osint.timer import cancel_search_timer
 
 
 logger = logging.getLogger(__name__)
@@ -34,18 +36,20 @@ CALLBACK_COOLDOWN_MAX_AGE = 60.0
 _callback_check_counter = 0
 
 
-# =========================
-# АДМИНИСТРАТОРЫ
-# =========================
-
-ADMIN_IDS = {
-    6495550812,
-    6326978216,
-}
-
-
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+# =========================
+# ОЧИСТКА СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЯ
+# =========================
+
+async def clear_user_state(
+    state: FSMContext,
+    user_id: int,
+) -> None:
+    await cancel_search_timer(user_id)
+    await state.clear()
 
 
 # =========================
@@ -336,7 +340,10 @@ async def cmd_start(
     if user is None:
         return
 
-    await state.clear()
+    await clear_user_state(
+        state,
+        user.id,
+    )
 
     referrer_id = None
 
@@ -452,7 +459,15 @@ async def cancel_form(
     message: Message,
     state: FSMContext,
 ) -> None:
-    await state.clear()
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await clear_user_state(
+        state,
+        user.id,
+    )
 
     await message.answer(
         "❌ Действие отменено.",
@@ -465,7 +480,15 @@ async def cmd_vpn(
     message: Message,
     state: FSMContext,
 ) -> None:
-    await state.clear()
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await clear_user_state(
+        state,
+        user.id,
+    )
 
     await show_vpn_menu(message)
 
@@ -485,7 +508,10 @@ async def cb_back_to_main(
     if not await safe_callback_answer(callback):
         return
 
-    await state.clear()
+    await clear_user_state(
+        state,
+        callback.from_user.id,
+    )
 
     await safe_edit_message(
         callback,
@@ -511,7 +537,10 @@ async def cb_back_step(
     ):
         return
 
-    await state.clear()
+    await clear_user_state(
+        state,
+        callback.from_user.id,
+    )
 
     await safe_edit_message(
         callback,
@@ -732,7 +761,15 @@ async def reply_main_menu(
     message: Message,
     state: FSMContext,
 ) -> None:
-    await state.clear()
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await clear_user_state(
+        state,
+        user.id,
+    )
 
     await message.answer(
         "🏠 Вы вернулись в главное меню.",
@@ -745,7 +782,15 @@ async def reply_support(
     message: Message,
     state: FSMContext,
 ) -> None:
-    await state.clear()
+    user = message.from_user
+
+    if user is None:
+        return
+
+    await clear_user_state(
+        state,
+        user.id,
+    )
 
     await message.answer(
         (

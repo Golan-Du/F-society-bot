@@ -1,5 +1,6 @@
 import logging
 from html import escape
+from admin_config import ADMIN_IDS
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -25,11 +26,6 @@ logger = logging.getLogger(__name__)
 
 VPN_NOTIFICATION_TYPE = "vpn"
 OSINT_NOTIFICATION_TYPE = "osint"
-
-ADMIN_IDS = {
-    6495550812,
-    6326978216,
-}
 
 
 class BroadcastState(StatesGroup):

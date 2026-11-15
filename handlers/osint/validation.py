@@ -11,8 +11,8 @@ from phonenumbers import NumberParseException
 USERNAME_MIN_LENGTH = 4
 USERNAME_MAX_LENGTH = 32
 
-TELEGRAM_ID_MIN_LENGTH = 5
-TELEGRAM_ID_MAX_LENGTH = 15
+TELEGRAM_ID_MIN_LENGTH = 6
+TELEGRAM_ID_MAX_LENGTH = 13
 
 TELEGRAM_DOMAINS = {
     "t.me",
@@ -321,7 +321,7 @@ def validate_telegram_id(
     value: str,
 ) -> tuple[bool, str]:
 
-    telegram_id = "".join(value.split())
+    telegram_id = value.strip()
 
     if not telegram_id:
         return (

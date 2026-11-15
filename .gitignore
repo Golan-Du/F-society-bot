@@ -1,10 +1,20 @@
 # Секретные данные
+.env
+.env.*
+!.env.example
 config.py
+admin_config.py
 
 # Базы данных
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
+*.bak
+*.backup
 
 # Python
 __pycache__/
@@ -16,15 +26,6 @@ venv/
 
 # Логи
 *.log
-
-# Резервные копии
-*.bak
-*.backup
-
-.env
-.env.*
-!.env.example
-
 .env
 .env.*
 !.env.example

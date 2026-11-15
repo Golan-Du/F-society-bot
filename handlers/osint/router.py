@@ -18,6 +18,7 @@ from .scan import run_scan
 from .states import OsintSearchState
 from .timer import (
     cancel_search_timer,
+    finish_search_timer,
     start_search_timer,
 )
 from .validation import (
@@ -194,6 +195,34 @@ async def check_callback_cooldown(
         return False
 
     callback_cooldowns[cooldown_key] = current_time
+
+    return True
+
+
+# =========================
+# ЗАВЕРШЕНИЕ ОЖИДАНИЯ ПОИСКА
+# =========================
+
+async def complete_search_input(
+    message: Message,
+    state: FSMContext,
+) -> bool:
+    user = message.from_user
+
+    if user is None:
+        return False
+
+    finished = await finish_search_timer(
+        user_id=user.id,
+        state=state,
+    )
+
+    if not finished:
+        await message.answer(
+            "⌛ Время ожидания истекло. "
+            "Выберите формат поиска заново."
+        )
+        return False
 
     return True
 
@@ -399,12 +428,8 @@ async def process_phone(
         await message.answer(result)
         return
 
-    user = message.from_user
-
-    if user is not None:
-        await cancel_search_timer(user.id)
-
-    await state.clear()
+    if not await complete_search_input(message, state):
+        return
 
     await run_scan(
         message=message,
@@ -435,12 +460,8 @@ async def process_username(
         await message.answer(result)
         return
 
-    user = message.from_user
-
-    if user is not None:
-        await cancel_search_timer(user.id)
-
-    await state.clear()
+    if not await complete_search_input(message, state):
+        return
 
     await run_scan(
         message=message,
@@ -471,12 +492,8 @@ async def process_telegram_id(
         await message.answer(result)
         return
 
-    user = message.from_user
-
-    if user is not None:
-        await cancel_search_timer(user.id)
-
-    await state.clear()
+    if not await complete_search_input(message, state):
+        return
 
     await run_scan(
         message=message,
