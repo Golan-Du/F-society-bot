@@ -21,22 +21,28 @@ async def safe_edit_message(
     text: str,
     reply_markup=None,
 ) -> bool:
+
     try:
         await message.edit_text(
             text,
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
+
         return True
 
     except TelegramBadRequest as error:
         error_text = str(error).lower()
 
-        if (
-            "message is not modified" in error_text
-            or "message to edit not found" in error_text
-        ):
+        if "message is not modified" in error_text:
+            return True
+
+        if "message to edit not found" in error_text:
             return False
+
+        logger.exception(
+            "Ошибка редактирования сообщения OSINT"
+        )
 
         raise
 
@@ -50,6 +56,7 @@ def get_search_result_text(
     search_value: str,
     record_found: bool,
 ) -> str:
+
     if record_found:
         status = "🟢 Данные обнаружены"
         sources = random.randint(1, 5)
@@ -59,6 +66,7 @@ def get_search_result_text(
             "📥 Найденные данные временно "
             "имитируются."
         )
+
     else:
         status = "🟡 Данные не обнаружены"
         sources = random.randint(3, 8)
@@ -102,6 +110,7 @@ async def run_scan(
     def get_progress_text(
         status: str,
     ) -> str:
+
         return (
             "🔎 <b>OSINT-сканер</b>\n\n"
             f"{safe_search_type}: "
@@ -113,6 +122,7 @@ async def run_scan(
         status: str,
         delay: float,
     ) -> bool:
+
         await asyncio.sleep(delay)
 
         return await safe_edit_message(
@@ -198,6 +208,7 @@ async def run_scan(
             "OSINT-поиск отменён. user_id=%s",
             message.from_user.id if message.from_user else None,
         )
+
         raise
 
     except Exception:

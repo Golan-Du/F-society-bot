@@ -33,7 +33,12 @@ SEARCH_STATES = {
 }
 
 
+# =========================
+# БЛОКИРОВКИ ПОЛЬЗОВАТЕЛЕЙ
+# =========================
+
 def get_user_lock(user_id: int) -> asyncio.Lock:
+
     lock = _user_locks.get(user_id)
 
     if lock is None:
@@ -42,6 +47,10 @@ def get_user_lock(user_id: int) -> asyncio.Lock:
 
     return lock
 
+
+# =========================
+# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ
+# =========================
 
 async def safe_timer_edit(
     message: Message,
@@ -61,17 +70,22 @@ async def safe_timer_edit(
     except TelegramBadRequest as error:
         error_text = str(error).lower()
 
-        if (
-            "message is not modified" in error_text
-            or "message to edit not found" in error_text
-        ):
+        if "message is not modified" in error_text:
+            return True
+
+        if "message to edit not found" in error_text:
             return False
 
         logger.exception(
             "Ошибка редактирования таймера"
         )
+
         raise
 
+
+# =========================
+# ОЖИДАНИЕ ЗАВЕРШЕНИЯ ЗАДАЧИ
+# =========================
 
 async def wait_timer_task(
     task: asyncio.Task | None,
@@ -84,16 +98,27 @@ async def wait_timer_task(
         return
 
     try:
-        await task
+        await asyncio.shield(task)
 
     except asyncio.CancelledError:
-        pass
+
+        current_task = asyncio.current_task()
+
+        if (
+            current_task is not None
+            and current_task.cancelling()
+        ):
+            raise
 
     except Exception:
         logger.exception(
             "Ошибка ожидания завершения таймера"
         )
 
+
+# =========================
+# УДАЛЕНИЕ СООБЩЕНИЯ
+# =========================
 
 async def delete_timer_message(
     message: Message | None,
@@ -114,6 +139,10 @@ async def delete_timer_message(
         )
 
 
+# =========================
+# ОТМЕНА ТАЙМЕРА
+# =========================
+
 async def cancel_search_timer(
     user_id: int,
     delete_message: bool = True,
@@ -122,6 +151,7 @@ async def cancel_search_timer(
     lock = get_user_lock(user_id)
 
     async with lock:
+
         task = search_timer_tasks.pop(
             user_id,
             None,
@@ -150,52 +180,30 @@ async def cancel_search_timer(
         await delete_timer_message(timer_message)
 
 
+# =========================
+# ЗАВЕРШЕНИЕ ОЖИДАНИЯ ПОИСКА
+# =========================
+
 async def finish_search_timer(
     user_id: int,
     state: FSMContext,
 ) -> bool:
-    """
-    Завершает ожидание поискового запроса.
-
-    Возвращает False, если:
-    - время истекло;
-    - задача таймера отсутствует;
-    - задача уже завершилась;
-    - пользователь больше не находится в состоянии поиска.
-    """
 
     lock = get_user_lock(user_id)
 
     task = None
     timer_message = None
+
     accepted = False
 
     async with lock:
+
         current_state = await state.get_state()
 
         if current_state not in SEARCH_STATES:
             return False
 
-        task = search_timer_tasks.get(user_id)
-
-        deadline = search_timer_deadlines.get(user_id)
-
-        if (
-            task is None
-            or task.done()
-            or deadline is None
-        ):
-            return False
-
-        loop = asyncio.get_running_loop()
-
-        if loop.time() >= deadline:
-            accepted = False
-
-        else:
-            accepted = True
-
-        search_timer_tasks.pop(
+        task = search_timer_tasks.pop(
             user_id,
             None,
         )
@@ -205,15 +213,38 @@ async def finish_search_timer(
             None,
         )
 
-        search_timer_deadlines.pop(
+        deadline = search_timer_deadlines.pop(
             user_id,
             None,
         )
 
-        if not task.done():
-            task.cancel()
+        if (
+            task is None
+            or task.done()
+            or deadline is None
+        ):
 
-        await state.clear()
+            if (
+                task is not None
+                and not task.done()
+                and task is not asyncio.current_task()
+            ):
+                task.cancel()
+
+            await state.clear()
+
+            accepted = False
+
+        else:
+
+            loop = asyncio.get_running_loop()
+
+            accepted = loop.time() < deadline
+
+            if not task.done():
+                task.cancel()
+
+            await state.clear()
 
     await wait_timer_task(task)
 
@@ -221,6 +252,10 @@ async def finish_search_timer(
 
     return accepted
 
+
+# =========================
+# ИНТЕРФЕЙС ТАЙМЕРА
+# =========================
 
 def get_timer_interface(
     remaining: int,
@@ -242,18 +277,21 @@ def get_timer_interface(
     ]
 
     if remaining <= 20:
+
         status = (
             "⚠️ <b>Время почти вышло</b>\n\n"
             "Отправьте данные, чтобы продолжить поиск."
         )
 
     elif remaining <= 120:
+
         status = (
             "🟡 <b>Ожидание поискового запроса</b>\n\n"
             "Данные ещё не получены."
         )
 
     else:
+
         status = (
             "⏳ <b>Ожидание поискового запроса</b>\n\n"
             "Введите данные для начала поиска."
@@ -267,83 +305,168 @@ def get_timer_interface(
     )
 
 
+# =========================
+# ЗАПУСК ТАЙМЕРА
+# =========================
+
 async def start_search_timer(
     message: Message,
     state: FSMContext,
     user_id: int,
+    search_state,
 ) -> None:
+
+    if search_state.state not in SEARCH_STATES:
+        raise ValueError(
+            f"Недопустимое состояние поиска: {search_state.state}"
+        )
 
     lock = get_user_lock(user_id)
 
     old_task = None
     old_message = None
 
-    async with lock:
-        old_task = search_timer_tasks.pop(
-            user_id,
-            None,
-        )
+    try:
 
-        old_message = search_timer_messages.pop(
-            user_id,
-            None,
-        )
+        async with lock:
 
-        search_timer_deadlines.pop(
-            user_id,
-            None,
-        )
+            old_task = search_timer_tasks.pop(
+                user_id,
+                None,
+            )
 
-        if (
-            old_task is not None
-            and old_task is not asyncio.current_task()
-            and not old_task.done()
-        ):
-            old_task.cancel()
+            old_message = search_timer_messages.pop(
+                user_id,
+                None,
+            )
 
-    await wait_timer_task(old_task)
-    await delete_timer_message(old_message)
+            search_timer_deadlines.pop(
+                user_id,
+                None,
+            )
 
-    async with lock:
-        current_state = await state.get_state()
+            if (
+                old_task is not None
+                and old_task is not asyncio.current_task()
+                and not old_task.done()
+            ):
+                old_task.cancel()
 
-        if current_state not in SEARCH_STATES:
-            return
-
-        timer_message = await message.answer(
-            get_timer_interface(
-                remaining=SEARCH_INPUT_TIMEOUT,
-                animation_step=0,
-            ),
-            parse_mode="HTML",
-            reply_markup=get_back_keyboard(),
-        )
-
-        loop = asyncio.get_running_loop()
-
-        deadline = (
-            loop.time() + SEARCH_INPUT_TIMEOUT
-        )
-
-        search_timer_messages[user_id] = timer_message
-        search_timer_deadlines[user_id] = deadline
-
-        async def timer() -> None:
-
-            animation_step = 0
-            timed_out = False
+            await state.set_state(search_state)
 
             try:
-                while True:
-                    remaining = max(
-                        0,
-                        math.ceil(
-                            deadline - loop.time()
-                        ),
+
+                timer_message = await message.answer(
+                    get_timer_interface(
+                        remaining=SEARCH_INPUT_TIMEOUT,
+                        animation_step=0,
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=get_back_keyboard(),
+                )
+
+            except (Exception, asyncio.CancelledError):
+
+                try:
+                    current_state = await state.get_state()
+
+                    if current_state == search_state.state:
+                        await state.clear()
+
+                except Exception:
+                    logger.exception(
+                        "Ошибка очистки FSM после запуска таймера"
                     )
 
-                    if remaining <= 0:
+                raise
+
+            loop = asyncio.get_running_loop()
+
+            deadline = (
+                loop.time() + SEARCH_INPUT_TIMEOUT
+            )
+
+            search_timer_messages[user_id] = timer_message
+
+            search_timer_deadlines[user_id] = deadline
+
+            # =========================
+            # ЗАДАЧА ТАЙМЕРА
+            # =========================
+
+            async def timer() -> None:
+
+                animation_step = 0
+
+                timed_out = False
+                failed = False
+
+                try:
+
+                    while True:
+
+                        remaining = max(
+                            0,
+                            math.ceil(
+                                deadline - loop.time()
+                            ),
+                        )
+
+                        # =========================
+                        # ВРЕМЯ ИСТЕКЛО
+                        # =========================
+
+                        if remaining <= 0:
+
+                            async with lock:
+
+                                if (
+                                    search_timer_tasks.get(user_id)
+                                    is not asyncio.current_task()
+                                ):
+                                    return
+
+                                current_state = await state.get_state()
+
+                                if current_state not in SEARCH_STATES:
+                                    return
+
+                                await state.clear()
+
+                                updated = await safe_timer_edit(
+                                    timer_message,
+                                    (
+                                        "⌛ <b>Время ожидания истекло</b>\n\n"
+                                        "Поисковый запрос не был получен.\n\n"
+                                        "Выберите формат поиска заново."
+                                    ),
+                                    get_search_type_keyboard(),
+                                )
+
+                                if updated:
+                                    timed_out = True
+                                else:
+                                    failed = True
+
+                            return
+
+                        # =========================
+                        # ОЖИДАНИЕ ОБНОВЛЕНИЯ
+                        # =========================
+
+                        await asyncio.sleep(
+                            min(
+                                SEARCH_TIMER_UPDATE_INTERVAL,
+                                remaining,
+                            )
+                        )
+
+                        # =========================
+                        # ОБНОВЛЕНИЕ ТАЙМЕРА
+                        # =========================
+
                         async with lock:
+
                             if (
                                 search_timer_tasks.get(user_id)
                                 is not asyncio.current_task()
@@ -355,105 +478,107 @@ async def start_search_timer(
                             if current_state not in SEARCH_STATES:
                                 return
 
-                            await state.clear()
-
-                            timed_out = True
-
-                            await safe_timer_edit(
-                                timer_message,
-                                (
-                                    "⌛ <b>Время ожидания истекло</b>\n\n"
-                                    "Поисковый запрос не был получен.\n\n"
-                                    "Выберите формат поиска заново."
+                            remaining = max(
+                                0,
+                                math.ceil(
+                                    deadline - loop.time()
                                 ),
-                                get_search_type_keyboard(),
                             )
 
-                        return
+                            if remaining <= 0:
+                                continue
 
-                    await asyncio.sleep(
-                        min(
-                            SEARCH_TIMER_UPDATE_INTERVAL,
-                            remaining,
-                        )
+                            animation_step += 1
+
+                            updated = await safe_timer_edit(
+                                timer_message,
+                                get_timer_interface(
+                                    remaining=remaining,
+                                    animation_step=animation_step,
+                                ),
+                                get_back_keyboard(),
+                            )
+
+                            if not updated:
+                                failed = True
+                                return
+
+                except asyncio.CancelledError:
+                    raise
+
+                except Exception:
+
+                    failed = True
+
+                    logger.exception(
+                        "Ошибка таймера ожидания поиска"
                     )
+
+                finally:
 
                     async with lock:
-                        if (
+
+                        is_current_task = (
                             search_timer_tasks.get(user_id)
-                            is not asyncio.current_task()
-                        ):
-                            return
-
-                        current_state = await state.get_state()
-
-                        if current_state not in SEARCH_STATES:
-                            return
-
-                        remaining = max(
-                            0,
-                            math.ceil(
-                                deadline - loop.time()
-                            ),
+                            is asyncio.current_task()
                         )
 
-                        if remaining <= 0:
-                            continue
-
-                        animation_step += 1
-
-                        updated = await safe_timer_edit(
-                            timer_message,
-                            get_timer_interface(
-                                remaining=remaining,
-                                animation_step=animation_step,
-                            ),
-                            get_back_keyboard(),
+                        is_current_message = (
+                            search_timer_messages.get(user_id)
+                            is timer_message
                         )
 
-                        if not updated:
-                            return
+                        if is_current_task:
 
-            except asyncio.CancelledError:
-                raise
+                            search_timer_tasks.pop(
+                                user_id,
+                                None,
+                            )
 
-            except Exception:
-                logger.exception(
-                    "Ошибка таймера ожидания поиска"
-                )
+                            search_timer_deadlines.pop(
+                                user_id,
+                                None,
+                            )
 
-            finally:
-                async with lock:
-                    is_current_task = (
-                        search_timer_tasks.get(user_id)
-                        is asyncio.current_task()
-                    )
+                            if failed:
 
-                    if is_current_task:
-                        search_timer_tasks.pop(
-                            user_id,
-                            None,
+                                try:
+
+                                    current_state = await state.get_state()
+
+                                    if current_state in SEARCH_STATES:
+                                        await state.clear()
+
+                                except Exception:
+
+                                    logger.exception(
+                                        "Ошибка очистки FSM после сбоя таймера"
+                                    )
+
+                        if is_current_message:
+
+                            search_timer_messages.pop(
+                                user_id,
+                                None,
+                            )
+
+                    if (
+                        is_current_message
+                        and not timed_out
+                    ):
+                        await delete_timer_message(
+                            timer_message
                         )
 
-                        search_timer_deadlines.pop(
-                            user_id,
-                            None,
-                        )
+            task = asyncio.create_task(timer())
 
-                    is_current_message = (
-                        search_timer_messages.get(user_id)
-                        is timer_message
-                    )
+            search_timer_tasks[user_id] = task
 
-                    if is_current_message:
-                        search_timer_messages.pop(
-                            user_id,
-                            None,
-                        )
+    finally:
 
-                if not timed_out and is_current_message:
-                    await delete_timer_message(timer_message)
+        # Старые ресурсы очищаются даже при ошибке
+        # отправки нового сообщения или запуска таймера.
 
-        task = asyncio.create_task(timer())
+        await wait_timer_task(old_task)
 
-        search_timer_tasks[user_id] = task
+        await delete_timer_message(old_message)

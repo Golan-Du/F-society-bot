@@ -65,6 +65,7 @@ async def safe_callback_answer(
     text: str | None = None,
     show_alert: bool = False,
 ) -> bool:
+
     try:
         await callback.answer(
             text=text,
@@ -105,7 +106,8 @@ async def safe_edit_message(
     reply_markup=None,
     parse_mode: str = "HTML",
 ) -> bool:
-    if callback.message is None:
+
+    if not isinstance(callback.message, Message):
         return False
 
     try:
@@ -120,15 +122,10 @@ async def safe_edit_message(
     except TelegramBadRequest as error:
         error_text = str(error).lower()
 
-        ignored_errors = (
-            "message is not modified",
-            "message to edit not found",
-        )
+        if "message is not modified" in error_text:
+            return True
 
-        if any(
-            ignored_error in error_text
-            for ignored_error in ignored_errors
-        ):
+        if "message to edit not found" in error_text:
             return False
 
         logger.exception(
@@ -145,6 +142,7 @@ async def safe_edit_message(
 def cleanup_callback_cooldowns(
     current_time: float,
 ) -> None:
+
     expired_keys = [
         key
         for key, last_time in callback_cooldowns.items()
@@ -162,6 +160,7 @@ def cleanup_callback_cooldowns(
 async def check_callback_cooldown(
     callback: CallbackQuery,
 ) -> bool:
+
     global _callback_check_counter
 
     user_id = callback.from_user.id
@@ -207,6 +206,7 @@ async def complete_search_input(
     message: Message,
     state: FSMContext,
 ) -> bool:
+
     user = message.from_user
 
     if user is None:
@@ -222,9 +222,36 @@ async def complete_search_input(
             "⌛ Время ожидания истекло. "
             "Выберите формат поиска заново."
         )
+
         return False
 
     return True
+
+
+# =========================
+# ЗАПУСК ВЫБОРА ТИПА ПОИСКА
+# =========================
+
+async def begin_search(
+    callback: CallbackQuery,
+    state: FSMContext,
+    search_state,
+) -> None:
+
+    if not await check_callback_cooldown(callback):
+        return
+
+    await safe_callback_answer(callback)
+
+    if not isinstance(callback.message, Message):
+        return
+
+    await start_search_timer(
+        message=callback.message,
+        state=state,
+        user_id=callback.from_user.id,
+        search_state=search_state,
+    )
 
 
 # =========================
@@ -236,6 +263,7 @@ async def cmd_osint(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     user = message.from_user
 
     if user is not None:
@@ -258,6 +286,7 @@ async def cb_osint_scan(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     if not await check_callback_cooldown(callback):
         return
 
@@ -286,21 +315,12 @@ async def cb_osint_phone(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    if not await check_callback_cooldown(callback):
-        return
 
-    await safe_callback_answer(callback)
-
-    await state.set_state(
-        OsintSearchState.waiting_for_phone,
+    await begin_search(
+        callback=callback,
+        state=state,
+        search_state=OsintSearchState.waiting_for_phone,
     )
-
-    if callback.message is not None:
-        await start_search_timer(
-            message=callback.message,
-            state=state,
-            user_id=callback.from_user.id,
-        )
 
 
 @router.callback_query(F.data == "osint_username")
@@ -308,45 +328,25 @@ async def cb_osint_username(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    if not await check_callback_cooldown(callback):
-        return
 
-    await safe_callback_answer(callback)
-
-    await state.set_state(
-        OsintSearchState.waiting_for_username,
+    await begin_search(
+        callback=callback,
+        state=state,
+        search_state=OsintSearchState.waiting_for_username,
     )
 
-    if callback.message is not None:
-        await start_search_timer(
-            message=callback.message,
-            state=state,
-            user_id=callback.from_user.id,
-        )
 
-
-@router.callback_query(
-    F.data == "osint_telegram_id",
-)
+@router.callback_query(F.data == "osint_telegram_id")
 async def cb_osint_telegram_id(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
-    if not await check_callback_cooldown(callback):
-        return
 
-    await safe_callback_answer(callback)
-
-    await state.set_state(
-        OsintSearchState.waiting_for_telegram_id,
+    await begin_search(
+        callback=callback,
+        state=state,
+        search_state=OsintSearchState.waiting_for_telegram_id,
     )
-
-    if callback.message is not None:
-        await start_search_timer(
-            message=callback.message,
-            state=state,
-            user_id=callback.from_user.id,
-        )
 
 
 # =========================
@@ -364,6 +364,7 @@ async def cb_osint_telegram_id(
 async def invalid_search_content(
     message: Message,
 ) -> None:
+
     await message.answer(
         (
             "⚠️ Неверный формат.\n\n"
@@ -389,6 +390,7 @@ async def cancel_search(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     user = message.from_user
 
     if user is not None:
@@ -420,6 +422,7 @@ async def process_phone(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     is_valid, result = validate_phone(
         message.text,
     )
@@ -452,6 +455,7 @@ async def process_username(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     is_valid, result = validate_username(
         message.text,
     )
@@ -484,6 +488,7 @@ async def process_telegram_id(
     message: Message,
     state: FSMContext,
 ) -> None:
+
     is_valid, result = validate_telegram_id(
         message.text,
     )
@@ -511,6 +516,7 @@ async def cb_osint_repeat(
     callback: CallbackQuery,
     state: FSMContext,
 ) -> None:
+
     if not await check_callback_cooldown(callback):
         return
 
