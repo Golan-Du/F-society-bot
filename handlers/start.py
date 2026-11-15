@@ -233,15 +233,10 @@ async def safe_edit_message(
     except TelegramBadRequest as error:
         error_text = str(error).lower()
 
-        ignored_errors = (
-            "message is not modified",
-            "message to edit not found",
-        )
+        if "message is not modified" in error_text:
+            return True
 
-        if any(
-            ignored_error in error_text
-            for ignored_error in ignored_errors
-        ):
+        if "message to edit not found" in error_text:
             return False
 
         logger.exception(
