@@ -20,3 +20,7 @@ venv/
 # Резервные копии
 *.bak
 *.backup
+
+.env
+.env.*
+!.env.example
