@@ -302,6 +302,30 @@ async def check_callback_cooldown(
 
 
 # =========================
+# ТЕКСТЫ РАЗДЕЛОВ
+# =========================
+
+def get_main_menu_text() -> str:
+    return (
+        "🕶 <b>F-Society</b>\n"
+        "<i>OSINT & VPN ecosystem</i>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Выберите нужный раздел:"
+    )
+
+
+def get_vpn_menu_text() -> str:
+    return (
+        "🛡 <b>VPN & Безопасность</b>\n\n"
+        "Раздел готовится к запуску.\n\n"
+        "Здесь появятся управление подпиской,\n"
+        "выбор локации и подключение к VPN.\n\n"
+        "━━━━━━━━━━━━\n"
+        "🔒 F-Society Security"
+    )
+
+
+# =========================
 # VPN
 # =========================
 
@@ -309,13 +333,7 @@ async def show_vpn_menu(
     message: Message,
 ) -> None:
     await message.answer(
-        (
-            "🛡 <b>VPN & Безопасность</b>\n\n"
-            "Раздел управления VPN находится "
-            "в разработке.\n\n"
-            "Позже здесь появятся доступные локации, "
-            "управление подпиской и подключением."
-        ),
+        get_vpn_menu_text(),
         parse_mode="HTML",
         reply_markup=get_back_keyboard(),
     )
@@ -381,13 +399,15 @@ async def cmd_start(
         return
 
     welcome_text = (
-        "🚀 <b>Добро пожаловать в F-Society</b>\n\n"
-        "OSINT & VPN ecosystem\n\n"
-        "🎁 На старте предусмотрено "
+        "🕶 <b>F-Society</b>\n"
+        "<i>OSINT & VPN ecosystem</i>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Инструменты для работы с открытыми "
+        "источниками и цифровой безопасности.\n\n"
+        "🎁 <b>Стартовый бонус:</b> "
         "7 дней бесплатного VPN.\n\n"
-        "🔎 Работа с открытыми источниками\n"
-        "⚡ Быстрый поиск и сбор данных\n"
-        "🛡 Защита цифрового следа"
+        "🔎 OSINT — анализ открытых источников\n"
+        "🛡 VPN — защита цифрового соединения"
     )
 
     await message.answer(
@@ -397,7 +417,7 @@ async def cmd_start(
     )
 
     await message.answer(
-        "👇 Нижнее меню для быстрого доступа:",
+        "⌄ Быстрый доступ",
         reply_markup=get_main_reply_keyboard(),
     )
 
@@ -407,26 +427,31 @@ async def cmd_help(
     message: Message,
 ) -> None:
     help_text = (
-        "📚 <b>F-Society — справка</b>\n\n"
-        "<b>Основные команды:</b>\n"
-        "/start — запуск бота и главное меню\n"
-        "/help — эта справка\n"
-        "/profile — просмотр профиля\n"
-        "/osint — открыть OSINT-раздел\n"
-        "/vpn — открыть VPN-раздел\n\n"
-        "<b>Уведомления:</b>\n"
+        "📚 <b>F-Society — справка</b>\n"
+        "━━━━━━━━━━━━\n\n"
+
+        "<b>Основные команды</b>\n"
+        "/start — главное меню\n"
+        "/help — справка\n"
+        "/profile — мой профиль\n"
+        "/osint — OSINT-сканер\n"
+        "/vpn — VPN-раздел\n\n"
+
+        "<b>Уведомления</b>\n"
         "/subscribe — управление подписками\n"
-        "/subscribe_vpn — подписаться на VPN\n"
-        "/unsubscribe_vpn — отписаться\n"
-        "/subscribe_osint — подписаться на OSINT\n"
-        "/unsubscribe_osint — отписаться\n\n"
-        "<b>Другое:</b>\n"
-        "/cancel — отменить текущее действие\n\n"
-        "<b>Разделы бота:</b>\n"
+        "/subscribe_vpn — подписка на VPN\n"
+        "/unsubscribe_vpn — отписка от VPN\n"
+        "/subscribe_osint — подписка на OSINT\n"
+        "/unsubscribe_osint — отписка от OSINT\n\n"
+
+        "<b>Другое</b>\n"
+        "/cancel — отменить действие\n\n"
+
+        "<b>Разделы F-Society</b>\n"
         "🔎 OSINT — поиск и анализ открытых источников.\n"
-        "🛡 VPN — управление сервисом VPN.\n"
+        "🛡 VPN — управление VPN-сервисом.\n"
         "👤 Профиль — информация об аккаунте.\n"
-        "🔔 Уведомления — подписки на новости сервисов.\n"
+        "🔔 Уведомления — новости сервисов.\n"
         "🆘 Поддержка — помощь пользователям."
     )
 
@@ -434,12 +459,13 @@ async def cmd_help(
 
     if user is not None and is_admin(user.id):
         help_text += (
-            "\n\n<b>🔐 Админ-команды:</b>\n"
+            "\n\n━━━━━━━━━━━━\n"
+            "<b>🔐 Администрирование</b>\n"
             "/subscribers — статистика подписчиков\n"
-            "/broadcast — отправить рассылку\n"
+            "/broadcast — отправка рассылки\n"
             "/banned — список заблокированных\n"
-            "/ban USER_ID — заблокировать пользователя\n"
-            "/unban USER_ID — разблокировать пользователя"
+            "/ban USER_ID — блокировка пользователя\n"
+            "/unban USER_ID — разблокировка пользователя"
         )
 
     await message.answer(
@@ -510,10 +536,7 @@ async def cb_back_to_main(
 
     await safe_edit_message(
         callback,
-        (
-            "🚀 <b>Главное меню F-Society</b>\n\n"
-            "Выберите нужный раздел:"
-        ),
+        get_main_menu_text(),
         get_main_inline_keyboard(),
     )
 
@@ -539,10 +562,7 @@ async def cb_back_step(
 
     await safe_edit_message(
         callback,
-        (
-            "🚀 <b>Главное меню F-Society</b>\n\n"
-            "Выберите нужный раздел:"
-        ),
+        get_main_menu_text(),
         get_main_inline_keyboard(),
     )
 
@@ -612,11 +632,7 @@ async def cb_vpn(
 
     await safe_edit_message(
         callback,
-        (
-            "🛡 <b>VPN & Безопасность</b>\n\n"
-            "Раздел управления VPN находится "
-            "в разработке."
-        ),
+        get_vpn_menu_text(),
         get_back_keyboard(),
     )
 
@@ -767,7 +783,8 @@ async def reply_main_menu(
     )
 
     await message.answer(
-        "🏠 Вы вернулись в главное меню.",
+        get_main_menu_text(),
+        parse_mode="HTML",
         reply_markup=get_main_inline_keyboard(),
     )
 

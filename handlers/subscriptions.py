@@ -43,12 +43,14 @@ async def check_admin(message: Message) -> bool:
     user = message.from_user
 
     if user is None or not is_admin(user.id):
-        await message.answer("⛔ Недостаточно прав.")
+        await message.answer(
+            "🔐 Недостаточно прав.\n"
+            "Эта функция доступна только администраторам F-Society."
+        )
         return False
 
     return True
-
-
+    
 async def handle_subscribe(
     message: Message,
     notification_type: str,
