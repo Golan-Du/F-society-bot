@@ -417,7 +417,7 @@ async def cmd_start(
     )
 
     await message.answer(
-        "⌄ Быстрый доступ",
+        "👇 Выберите действие:",
         reply_markup=get_main_reply_keyboard(),
     )
 

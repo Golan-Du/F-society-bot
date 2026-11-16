@@ -13,6 +13,8 @@ from aiogram.types import (
     Message,
 )
 
+from admin_config import ADMIN_IDS, CREATOR_ID
+
 from database.db import (
     FREE_SEARCHES_LIMIT,
     get_user_profile,
@@ -93,12 +95,19 @@ def get_safe_text(
 
 
 def get_ban_status(
+    user_id: int,
     is_banned,
 ) -> str:
     if bool(is_banned):
         return "🚫 Заблокирован"
 
-    return "✅ Активен"
+    if user_id == CREATOR_ID:
+        return "👑 Статус: ✨ Создатель F-Society"
+
+    if user_id in ADMIN_IDS:
+        return "👑 Статус: 🛡️ Администратор F-Society"
+
+    return "📌 Статус: ✅ Активен"
 
 
 # =========================
@@ -253,7 +262,7 @@ async def get_profile_data(
         "vpn_days_bought": get_safe_number(
             vpn_days_bought,
         ),
-        "ban_status": get_ban_status(is_banned),
+        "ban_status": get_ban_status(user_id, is_banned),
     }
 
 
@@ -266,18 +275,29 @@ def build_profile_main_text(
     profile: dict,
 ) -> str:
     return (
-        "👤 <b>Твой профиль F-Society</b>\n\n"
+        "👤 <b>ЛИЧНЫЙ КАБИНЕТ</b>\n"
+        "<i>F-Society | OSINT & VPN</i>\n"
+        "━━━━━━━━━━━━━━\n\n"
+
         f"🆔 ID: <code>{user_id}</code>\n"
-        f"📌 Статус: <b>{profile['ban_status']}</b>\n\n"
-        f"💰 Баланс: <b>{profile['balance']} руб.</b>\n"
-        f"🔎 Поиски: "
+        f"{profile['ban_status']}\n\n"
+
+        "━━━━━━━━━━━━━━\n"
+        "💰 <b>БАЛАНС</b>\n"
+        f"<b>{profile['balance']} руб.</b>\n\n"
+
+        "🔎 <b>БЕСПЛАТНЫЕ ПОИСКИ</b>\n"
         f"<b>{profile['free_searches']}/"
-        f"{FREE_SEARCHES_LIMIT}</b>\n"
-        f"🛡 VPN: "
-        f"<b>{profile['vpn_days_left']} дн.</b>\n"
-        f"👥 Приглашено: "
-        f"<b>{profile['invited_count']}</b>\n\n"
-        "Выберите раздел ниже:"
+        f"{FREE_SEARCHES_LIMIT}</b>\n\n"
+
+        "🛡 <b>VPN-ДОСТУП</b>\n"
+        f"<b>{profile['vpn_days_left']} дн.</b>\n\n"
+
+        "👥 <b>РЕФЕРАЛЫ</b>\n"
+        f"<b>{profile['invited_count']}</b> приглашено\n"
+        "━━━━━━━━━━━━━━\n\n"
+
+        "<i>Выберите нужный раздел ниже.</i>"
     )
 
 

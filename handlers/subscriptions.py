@@ -1,5 +1,6 @@
 import logging
 from html import escape
+
 from admin_config import ADMIN_IDS
 
 from aiogram import F, Router
@@ -27,6 +28,8 @@ logger = logging.getLogger(__name__)
 VPN_NOTIFICATION_TYPE = "vpn"
 OSINT_NOTIFICATION_TYPE = "osint"
 
+MAX_BAN_REASON_LENGTH = 1000
+
 
 class BroadcastState(StatesGroup):
     waiting_for_type = State()
@@ -50,7 +53,8 @@ async def check_admin(message: Message) -> bool:
         return False
 
     return True
-    
+
+
 async def handle_subscribe(
     message: Message,
     notification_type: str,
@@ -436,19 +440,35 @@ async def ban_user_cmd(message: Message) -> None:
         return
 
     parts = (
-        message.text.split(maxsplit=1)
+        message.text.split(maxsplit=2)
         if message.text
         else []
     )
 
-    if len(parts) != 2 or not parts[1].isdigit():
+    if len(parts) < 2 or not parts[1].isdigit():
         await message.answer(
-            "⚠️ Использование:\n<code>/ban USER_ID</code>",
+            "⚠️ Использование:\n\n"
+            "<code>/ban USER_ID причина</code>\n\n"
+            "Пример:\n"
+            "<code>/ban 123456789 Нарушение правил</code>\n\n"
+            "Причину можно не указывать.",
             parse_mode="HTML",
         )
         return
 
     target_user_id = int(parts[1])
+
+    ban_reason = (
+        parts[2].strip()
+        if len(parts) == 3
+        else None
+    )
+
+    if target_user_id <= 0:
+        await message.answer(
+            "⚠️ Некорректный ID пользователя."
+        )
+        return
 
     if target_user_id in ADMIN_IDS:
         await message.answer(
@@ -456,10 +476,18 @@ async def ban_user_cmd(message: Message) -> None:
         )
         return
 
+    if ban_reason and len(ban_reason) > MAX_BAN_REASON_LENGTH:
+        await message.answer(
+            "⚠️ Причина блокировки слишком длинная.\n"
+            f"Максимум: {MAX_BAN_REASON_LENGTH} символов."
+        )
+        return
+
     try:
         updated = await set_user_ban(
             target_user_id,
             True,
+            ban_reason,
         )
 
         if not updated:
@@ -468,8 +496,22 @@ async def ban_user_cmd(message: Message) -> None:
             )
             return
 
+        reason_text = (
+            escape(ban_reason)
+            if ban_reason
+            else "Не указана"
+        )
+
         await message.answer(
-            f"🚫 Пользователь <code>{target_user_id}</code> заблокирован.",
+            "🚫 <b>Пользователь заблокирован</b>\n\n"
+            f"🆔 ID: <code>{target_user_id}</code>\n"
+            f"📋 Причина: {reason_text}",
+            parse_mode="HTML",
+        )
+
+    except ValueError as error:
+        await message.answer(
+            f"⚠️ {escape(str(error))}",
             parse_mode="HTML",
         )
 
@@ -501,12 +543,19 @@ async def unban_user_cmd(message: Message) -> None:
 
     if len(parts) != 2 or not parts[1].isdigit():
         await message.answer(
-            "⚠️ Использование:\n<code>/unban USER_ID</code>",
+            "⚠️ Использование:\n"
+            "<code>/unban USER_ID</code>",
             parse_mode="HTML",
         )
         return
 
     target_user_id = int(parts[1])
+
+    if target_user_id <= 0:
+        await message.answer(
+            "⚠️ Некорректный ID пользователя."
+        )
+        return
 
     try:
         updated = await set_user_ban(
@@ -534,4 +583,4 @@ async def unban_user_cmd(message: Message) -> None:
         await message.answer(
             "⚠️ Не удалось разблокировать пользователя."
         )
-        
+                

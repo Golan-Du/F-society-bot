@@ -57,7 +57,6 @@ async def init_db() -> None:
         await db.execute(f"""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-
                 username TEXT,
                 full_name TEXT,
 
@@ -69,7 +68,6 @@ async def init_db() -> None:
                     CHECK (free_searches >= 0),
 
                 joined_date TEXT NOT NULL,
-
                 referrer_id INTEGER DEFAULT NULL,
 
                 invited_count INTEGER NOT NULL DEFAULT 0
@@ -104,6 +102,29 @@ async def init_db() -> None:
             )
         """)
 
+        # Миграция существующей таблицы users.
+        async with db.execute(
+            "PRAGMA table_info(users)"
+        ) as cursor:
+            user_columns = await cursor.fetchall()
+
+        existing_columns = {
+            column["name"]
+            for column in user_columns
+        }
+
+        if "ban_reason" not in existing_columns:
+            await db.execute("""
+                ALTER TABLE users
+                ADD COLUMN ban_reason TEXT
+            """)
+
+        if "ban_date" not in existing_columns:
+            await db.execute("""
+                ALTER TABLE users
+                ADD COLUMN ban_date TEXT
+            """)
+
         await db.execute("""
             CREATE INDEX IF NOT EXISTS
             idx_users_referrer
@@ -120,7 +141,6 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS
             user_subscriptions (
                 user_id INTEGER NOT NULL,
-
                 notification_type TEXT NOT NULL,
 
                 is_active INTEGER NOT NULL DEFAULT 1
@@ -160,13 +180,10 @@ async def add_user_to_db(
 ) -> bool:
 
     async with connect_db() as db:
-        await db.execute(
-            "BEGIN IMMEDIATE"
-        )
+        await db.execute("BEGIN IMMEDIATE")
 
         try:
             joined_date = get_current_timestamp()
-
             valid_referrer_id = None
 
             if (
@@ -228,8 +245,7 @@ async def add_user_to_db(
                 await db.execute(
                     """
                     UPDATE users
-                    SET invited_count =
-                        invited_count + 1
+                    SET invited_count = invited_count + 1
                     WHERE user_id = ?
                     """,
                     (valid_referrer_id,)
@@ -239,9 +255,7 @@ async def add_user_to_db(
                 await db.execute(
                     """
                     UPDATE users
-                    SET
-                        username = ?,
-                        full_name = ?
+                    SET username = ?, full_name = ?
                     WHERE user_id = ?
                     """,
                     (
@@ -252,7 +266,6 @@ async def add_user_to_db(
                 )
 
             await db.commit()
-
             return is_new_user
 
         except Exception:
@@ -303,9 +316,25 @@ async def check_user_ban(
             if result is None:
                 return False
 
-            return bool(
-                result["is_banned"]
-            )
+            return bool(result["is_banned"])
+
+
+async def get_user_ban_info(
+    user_id: int,
+):
+    async with connect_db() as db:
+        async with db.execute(
+            """
+            SELECT
+                is_banned,
+                ban_reason,
+                ban_date
+            FROM users
+            WHERE user_id = ?
+            """,
+            (user_id,)
+        ) as cursor:
+            return await cursor.fetchone()
 
 
 async def get_banned_users():
@@ -327,23 +356,61 @@ async def get_banned_users():
 
 async def set_user_ban(
     user_id: int,
-    is_banned: bool
+    is_banned: bool,
+    ban_reason: str | None = None,
 ) -> bool:
 
     async with connect_db() as db:
-        cursor = await db.execute(
-            """
-            UPDATE users
-            SET is_banned = ?
-            WHERE user_id = ?
-            """,
-            (
-                int(is_banned),
-                user_id
-            )
-        )
+        await db.execute("BEGIN IMMEDIATE")
 
-        await db.commit()
+        try:
+            if is_banned:
+                reason = (
+                    ban_reason.strip()
+                    if ban_reason
+                    else None
+                )
 
-        return cursor.rowcount == 1   
-                             
+                if reason is not None and len(reason) > 1000:
+                    raise ValueError(
+                        "Причина блокировки не должна "
+                        "превышать 1000 символов."
+                    )
+
+                ban_date = get_current_timestamp()
+
+                cursor = await db.execute(
+                    """
+                    UPDATE users
+                    SET
+                        is_banned = 1,
+                        ban_reason = ?,
+                        ban_date = ?
+                    WHERE user_id = ?
+                    """,
+                    (
+                        reason,
+                        ban_date,
+                        user_id
+                    )
+                )
+
+            else:
+                cursor = await db.execute(
+                    """
+                    UPDATE users
+                    SET
+                        is_banned = 0,
+                        ban_reason = NULL,
+                        ban_date = NULL
+                    WHERE user_id = ?
+                    """,
+                    (user_id,)
+                )
+
+            await db.commit()
+            return cursor.rowcount == 1
+
+        except Exception:
+            await db.rollback()
+            raise                             
