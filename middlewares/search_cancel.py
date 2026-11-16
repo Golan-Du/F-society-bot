@@ -19,6 +19,21 @@ CANCEL_BUTTONS = {
 }
 
 
+# Состояния OSINT-поиска
+OSINT_STATES = {
+    OsintSearchState.waiting_for_phone.state,
+    OsintSearchState.waiting_for_username.state,
+    OsintSearchState.waiting_for_telegram_id.state,
+}
+
+
+# Состояния рассылки
+BROADCAST_STATES = {
+    BroadcastState.waiting_for_type.state,
+    BroadcastState.waiting_for_text.state,
+}
+
+
 class SearchCancelMiddleware(BaseMiddleware):
     async def __call__(
         self,
@@ -29,6 +44,7 @@ class SearchCancelMiddleware(BaseMiddleware):
         event: Message,
         data: dict[str, Any],
     ) -> Any:
+
         if not event.text:
             return await handler(event, data)
 
@@ -43,28 +59,27 @@ class SearchCancelMiddleware(BaseMiddleware):
 
         current_state = await state.get_state()
 
-        cancellable_states = {
-            OsintSearchState.waiting_for_phone.state,
-            OsintSearchState.waiting_for_username.state,
-            OsintSearchState.waiting_for_telegram_id.state,
-            BroadcastState.waiting_for_type.state,
-            BroadcastState.waiting_for_text.state,
-        }
-
-        # Команды всегда отменяют активное состояние
+        # Команды и кнопки меню отменяют активное действие
         is_command = event.text.startswith("/")
-
-        # Reply-кнопки меню тоже отменяют активное состояние
         is_cancel_button = event.text in CANCEL_BUTTONS
 
-        if (
-            current_state in cancellable_states
-            and (is_command or is_cancel_button)
+        if not (
+            is_command or is_cancel_button
         ):
+            return await handler(event, data)
+
+        # Отмена OSINT-поиска
+        if current_state in OSINT_STATES:
+
             user = event.from_user
 
             if user is not None:
                 await cancel_search_timer(user.id)
+
+            await state.clear()
+
+        # Отмена рассылки
+        elif current_state in BROADCAST_STATES:
 
             await state.clear()
 
