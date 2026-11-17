@@ -485,6 +485,16 @@ async def cancel_form(
     if user is None:
         return
 
+    current_state = await state.get_state()
+
+    if current_state == "SupportState:waiting_for_admin_reply":
+        await state.clear()
+
+        await message.answer(
+            "↩️ Ответ на тикет отменён."
+        )
+        return
+
     await clear_user_state(
         state,
         user.id,
@@ -660,106 +670,6 @@ async def cb_subscriptions(
             "/unsubscribe_osint — отписаться"
         ),
         get_back_keyboard(),
-    )
-
-
-# =========================
-# ПОДДЕРЖКА
-# =========================
-
-@router.callback_query(F.data == "support_problem")
-async def cb_support_problem(
-    callback: CallbackQuery,
-) -> None:
-    if not await check_callback_cooldown(callback):
-        return
-
-    if not await safe_callback_answer(callback):
-        return
-
-    await safe_edit_message(
-        callback,
-        (
-            "⚠️ <b>Сообщить о проблеме</b>\n\n"
-            "Система тикетов пока находится "
-            "в разработке.\n\n"
-            "Пока вы можете обратиться напрямую:\n\n"
-            "👉 @YA_BANAN_67"
-        ),
-        get_support_keyboard(),
-    )
-
-
-@router.callback_query(F.data == "support_suggestion")
-async def cb_support_suggestion(
-    callback: CallbackQuery,
-) -> None:
-    if not await check_callback_cooldown(callback):
-        return
-
-    if not await safe_callback_answer(callback):
-        return
-
-    await safe_edit_message(
-        callback,
-        (
-            "💡 <b>Предложение или улучшение</b>\n\n"
-            "Мы всегда открыты к новым идеям.\n\n"
-            "Система тикетов пока находится "
-            "в разработке.\n\n"
-            "Пока вы можете написать напрямую:\n\n"
-            "👉 @YA_BANAN_67"
-        ),
-        get_support_keyboard(),
-    )
-
-
-@router.callback_query(F.data == "support_review")
-async def cb_support_review(
-    callback: CallbackQuery,
-) -> None:
-    if not await check_callback_cooldown(callback):
-        return
-
-    if not await safe_callback_answer(callback):
-        return
-
-    await safe_edit_message(
-        callback,
-        (
-            "💬 <b>Отзыв о F-Society</b>\n\n"
-            "Ваше мнение помогает улучшать проект.\n\n"
-            "Система тикетов пока находится "
-            "в разработке.\n\n"
-            "Пока вы можете оставить отзыв напрямую:\n\n"
-            "👉 @YA_BANAN_67"
-        ),
-        get_support_keyboard(),
-    )
-
-
-@router.callback_query(F.data == "support_question")
-async def cb_support_question(
-    callback: CallbackQuery,
-) -> None:
-    if not await check_callback_cooldown(callback):
-        return
-
-    if not await safe_callback_answer(callback):
-        return
-
-    await safe_edit_message(
-        callback,
-        (
-            "❓ <b>Вопрос</b>\n\n"
-            "Если у вас есть вопрос по работе F-Society, "
-            "мы постараемся помочь.\n\n"
-            "Система тикетов пока находится "
-            "в разработке.\n\n"
-            "Пока вы можете написать напрямую:\n\n"
-            "👉 @YA_BANAN_67"
-        ),
-        get_support_keyboard(),
     )
 
 

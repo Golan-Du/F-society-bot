@@ -6,10 +6,118 @@ import random
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
+from database.db import check_user_ban
+
 from .keyboards import get_result_keyboard
 
 
 logger = logging.getLogger(__name__)
+
+
+# =========================
+# АКТИВНЫЕ СКАНИРОВАНИЯ
+# =========================
+
+active_scan_tasks: dict[int, asyncio.Task] = {}
+_scan_locks: dict[int, asyncio.Lock] = {}
+
+
+def get_scan_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _scan_locks:
+        _scan_locks[user_id] = asyncio.Lock()
+
+    return _scan_locks[user_id]
+
+
+async def is_user_banned(user_id: int) -> bool:
+    """
+    Проверяет блокировку.
+    При ошибке БД запрещает отправку результата.
+    """
+
+    try:
+        return await check_user_ban(user_id)
+
+    except Exception:
+        logger.exception(
+            "Не удалось проверить блокировку перед отправкой OSINT. "
+            "user_id=%s",
+            user_id,
+        )
+        return True
+
+
+async def cancel_active_scan(user_id: int) -> bool:
+    """Отменяет активное сканирование пользователя."""
+
+    lock = get_scan_lock(user_id)
+
+    async with lock:
+        task = active_scan_tasks.get(user_id)
+
+        if task is None:
+            return False
+
+        if task.done():
+            active_scan_tasks.pop(user_id, None)
+            return False
+
+        task.cancel()
+
+        await asyncio.gather(
+            task,
+            return_exceptions=True,
+        )
+
+        if active_scan_tasks.get(user_id) is task:
+            active_scan_tasks.pop(user_id, None)
+
+        logger.info(
+            "OSINT-сканирование отменено. user_id=%s",
+            user_id,
+        )
+
+        return True
+
+
+async def start_scan(
+    message: Message,
+    search_type: str,
+    search_value: str,
+) -> None:
+    """Запускает сканирование как отдельную управляемую задачу."""
+
+    user = message.from_user
+
+    if user is None:
+        return
+
+    user_id = user.id
+    lock = get_scan_lock(user_id)
+
+    async with lock:
+        previous_task = active_scan_tasks.get(user_id)
+
+        if previous_task is not None and not previous_task.done():
+            previous_task.cancel()
+
+            await asyncio.gather(
+                previous_task,
+                return_exceptions=True,
+            )
+
+        if active_scan_tasks.get(user_id) is previous_task:
+            active_scan_tasks.pop(user_id, None)
+
+        task = asyncio.create_task(
+            run_scan(
+                message=message,
+                search_type=search_type,
+                search_value=search_value,
+            )
+        )
+
+        active_scan_tasks[user_id] = task
 
 
 # =========================
@@ -93,7 +201,7 @@ def get_search_result_text(
 
 
 # =========================
-# ЗАПУСК ПОИСКА
+# ВЫПОЛНЕНИЕ ПОИСКА
 # =========================
 
 async def run_scan(
@@ -102,15 +210,19 @@ async def run_scan(
     search_value: str,
 ) -> None:
 
+    user = message.from_user
+
+    if user is None:
+        return
+
+    user_id = user.id
+
     safe_search_type = html.escape(search_type)
     safe_search_value = html.escape(search_value)
 
     progress_message = None
 
-    def get_progress_text(
-        status: str,
-    ) -> str:
-
+    def get_progress_text(status: str) -> str:
         return (
             "🔎 <b>OSINT-сканер</b>\n\n"
             f"{safe_search_type}: "
@@ -131,6 +243,10 @@ async def run_scan(
         )
 
     try:
+        # Не запускаем поиск для уже заблокированного пользователя.
+        if await is_user_banned(user_id):
+            return
+
         progress_message = await message.answer(
             (
                 "🔎 <b>OSINT-сканер</b>\n\n"
@@ -151,9 +267,7 @@ async def run_scan(
 
         await asyncio.sleep(1.2)
 
-        record_found = random.choice(
-            [True, False]
-        )
+        record_found = random.choice([True, False])
 
         if record_found:
             updated = await safe_edit_message(
@@ -193,6 +307,10 @@ async def run_scan(
 
         await asyncio.sleep(1.0)
 
+        # Повторная проверка непосредственно перед результатом.
+        if await is_user_banned(user_id):
+            return
+
         await safe_edit_message(
             progress_message,
             get_search_result_text(
@@ -204,20 +322,25 @@ async def run_scan(
         )
 
     except asyncio.CancelledError:
-        logger.debug(
+        logger.info(
             "OSINT-поиск отменён. user_id=%s",
-            message.from_user.id if message.from_user else None,
+            user_id,
         )
-
         raise
 
     except Exception:
         logger.exception(
-            "Ошибка выполнения OSINT-поиска"
+            "Ошибка выполнения OSINT-поиска. user_id=%s",
+            user_id,
         )
 
         if progress_message is not None:
             try:
+                # При блокировке или ошибке проверки
+                # не отправляем пользователю сообщение об ошибке.
+                if await is_user_banned(user_id):
+                    return
+
                 await safe_edit_message(
                     progress_message,
                     (
@@ -227,7 +350,15 @@ async def run_scan(
                     reply_markup=get_result_keyboard(),
                 )
 
-            except TelegramBadRequest:
+            except Exception:
                 logger.exception(
-                    "Не удалось отправить сообщение об ошибке"
+                    "Не удалось отправить сообщение об ошибке OSINT. "
+                    "user_id=%s",
+                    user_id,
                 )
+
+    finally:
+        current_task = asyncio.current_task()
+
+        if active_scan_tasks.get(user_id) is current_task:
+            active_scan_tasks.pop(user_id, None)

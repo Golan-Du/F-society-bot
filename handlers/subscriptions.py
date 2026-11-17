@@ -3,7 +3,7 @@ from html import escape
 
 from admin_config import ADMIN_IDS
 
-from aiogram import F, Router
+from aiogram import Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -13,6 +13,9 @@ from database.db import (
     get_banned_users,
     set_user_ban,
 )
+from services.ban_notification_service import (
+    send_ban_notification,
+)
 from repositories.subscription_repository import (
     get_subscribers,
     subscribe_user,
@@ -20,6 +23,8 @@ from repositories.subscription_repository import (
 )
 from services.notification_service import send_notification
 
+from .osint.scan import cancel_active_scan
+from .osint.timer import cancel_search_timer
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -435,7 +440,11 @@ async def banned_cmd(message: Message) -> None:
 # =========================
 
 @router.message(Command("ban"))
-async def ban_user_cmd(message: Message) -> None:
+async def ban_user_cmd(
+    message: Message,
+    dispatcher: Dispatcher,
+) -> None:
+
     if not await check_admin(message):
         return
 
@@ -484,28 +493,97 @@ async def ban_user_cmd(message: Message) -> None:
         return
 
     try:
-        updated = await set_user_ban(
+        result = await set_user_ban(
             target_user_id,
             True,
             ban_reason,
+            admin_id=message.from_user.id,
         )
 
-        if not updated:
+        status = result["status"]
+
+        if status == "not_found":
             await message.answer(
                 "⚠️ Пользователь с таким ID не найден."
             )
             return
 
+        if status == "already_banned":
+            await message.answer(
+                f"ℹ️ Пользователь <code>{target_user_id}</code> "
+                "уже заблокирован.",
+                parse_mode="HTML",
+            )
+            return
+
+        if status != "banned":
+            logger.error(
+                "Неожиданный результат блокировки %s: %s",
+                target_user_id,
+                result,
+            )
+            await message.answer(
+                "⚠️ Не удалось подтвердить блокировку."
+            )
+            return
+
+        # Отмена таймера ожидания OSINT.
+        try:
+            await cancel_search_timer(target_user_id)
+        except Exception:
+            logger.exception(
+                "Не удалось отменить OSINT-таймер. user_id=%s",
+                target_user_id,
+            )
+
+        # Отмена активного OSINT-сканирования.
+        try:
+            await cancel_active_scan(target_user_id)
+        except Exception:
+            logger.exception(
+                "Не удалось отменить OSINT-сканирование. user_id=%s",
+                target_user_id,
+            )
+
+        # Очистка FSM заблокированного пользователя.
+        try:
+            target_state = dispatcher.fsm.get_context(
+                bot=message.bot,
+                chat_id=target_user_id,
+                user_id=target_user_id,
+            )
+            await target_state.clear()
+        except Exception:
+            logger.exception(
+                "Не удалось очистить FSM заблокированного пользователя. "
+                "user_id=%s",
+                target_user_id,
+            )
+
+        notification_sent = await send_ban_notification(
+            message.bot,
+            result,
+        )
+
         reason_text = (
-            escape(ban_reason)
-            if ban_reason
+            escape(result["reason"])
+            if result["reason"]
             else "Не указана"
+        )
+
+        notification_status = (
+            "✅ Отправлено"
+            if notification_sent
+            else "❌ Не отправлено"
         )
 
         await message.answer(
             "🚫 <b>Пользователь заблокирован</b>\n\n"
-            f"🆔 ID: <code>{target_user_id}</code>\n"
-            f"📋 Причина: {reason_text}",
+            f"🆔 ID: <code>{result['user_id']}</code>\n"
+            f"📋 Причина: {reason_text}\n"
+            f"🕒 Дата: {result['timestamp']} МСК\n"
+            f"👮 Администратор: <code>{result['admin_id']}</code>\n"
+            f"📨 Уведомление: {notification_status}",
             parse_mode="HTML",
         )
 
@@ -522,10 +600,9 @@ async def ban_user_cmd(message: Message) -> None:
         )
 
         await message.answer(
-            "⚠️ Не удалось заблокировать пользователя."
+            "⚠️ Не удалось выполнить блокировку."
         )
-
-
+        
 # =========================
 # АДМИН: РАЗБАН
 # =========================
@@ -536,20 +613,27 @@ async def unban_user_cmd(message: Message) -> None:
         return
 
     parts = (
-        message.text.split(maxsplit=1)
+        message.text.split(maxsplit=2)
         if message.text
         else []
     )
 
-    if len(parts) != 2 or not parts[1].isdigit():
+    if len(parts) < 2 or not parts[1].isdigit():
         await message.answer(
-            "⚠️ Использование:\n"
-            "<code>/unban USER_ID</code>",
+            "⚠️ Использование:\n\n"
+            "<code>/unban USER_ID причина</code>\n\n"
+            "Причину можно не указывать.",
             parse_mode="HTML",
         )
         return
 
     target_user_id = int(parts[1])
+
+    unban_reason = (
+        parts[2].strip()
+        if len(parts) == 3
+        else None
+    )
 
     if target_user_id <= 0:
         await message.answer(
@@ -557,20 +641,81 @@ async def unban_user_cmd(message: Message) -> None:
         )
         return
 
+    if (
+        unban_reason
+        and len(unban_reason) > MAX_BAN_REASON_LENGTH
+    ):
+        await message.answer(
+            "⚠️ Причина разблокировки слишком длинная.\n"
+            f"Максимум: {MAX_BAN_REASON_LENGTH} символов."
+        )
+        return
+
     try:
-        updated = await set_user_ban(
+        result = await set_user_ban(
             target_user_id,
             False,
+            admin_id=message.from_user.id,
+            unban_reason=unban_reason,
         )
 
-        if not updated:
+        status = result["status"]
+
+        if status == "not_found":
             await message.answer(
                 "⚠️ Пользователь с таким ID не найден."
             )
             return
 
+        if status == "already_unbanned":
+            await message.answer(
+                f"ℹ️ Пользователь <code>{target_user_id}</code> "
+                "уже разблокирован.",
+                parse_mode="HTML",
+            )
+            return
+
+        if status != "unbanned":
+            logger.error(
+                "Неожиданный результат разблокировки %s: %s",
+                target_user_id,
+                result,
+            )
+            await message.answer(
+                "⚠️ Не удалось подтвердить разблокировку."
+            )
+            return
+
+        notification_sent = await send_ban_notification(
+            message.bot,
+            result,
+        )
+
+        reason_text = (
+            escape(result["reason"])
+            if result["reason"]
+            else "Не указана"
+        )
+
+        notification_status = (
+            "✅ Отправлено"
+            if notification_sent
+            else "❌ Не отправлено"
+        )
+
         await message.answer(
-            f"✅ Пользователь <code>{target_user_id}</code> разблокирован.",
+            "✅ <b>Пользователь разблокирован</b>\n\n"
+            f"🆔 ID: <code>{result['user_id']}</code>\n"
+            f"📋 Причина: {reason_text}\n"
+            f"🕒 Дата: {result['timestamp']} МСК\n"
+            f"👮 Администратор: <code>{result['admin_id']}</code>\n"
+            f"📨 Уведомление: {notification_status}",
+            parse_mode="HTML",
+        )
+
+    except ValueError as error:
+        await message.answer(
+            f"⚠️ {escape(str(error))}",
             parse_mode="HTML",
         )
 
@@ -581,6 +726,7 @@ async def unban_user_cmd(message: Message) -> None:
         )
 
         await message.answer(
-            "⚠️ Не удалось разблокировать пользователя."
+            "⚠️ Не удалось выполнить разблокировку."
         )
-                
+        
+        

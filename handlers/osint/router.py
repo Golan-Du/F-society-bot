@@ -14,7 +14,7 @@ from .keyboards import (
     get_result_keyboard,
     get_search_type_keyboard,
 )
-from .scan import run_scan
+from .scan import start_scan
 from .states import OsintSearchState
 from .timer import (
     cancel_search_timer,
@@ -434,7 +434,7 @@ async def process_phone(
     if not await complete_search_input(message, state):
         return
 
-    await run_scan(
+    await start_scan(
         message=message,
         search_type="📱 Номер",
         search_value=f"+{result}",
@@ -467,7 +467,7 @@ async def process_username(
     if not await complete_search_input(message, state):
         return
 
-    await run_scan(
+    await start_scan(
         message=message,
         search_type="👤 Username",
         search_value=f"@{result}",
@@ -500,7 +500,7 @@ async def process_telegram_id(
     if not await complete_search_input(message, state):
         return
 
-    await run_scan(
+    await start_scan(
         message=message,
         search_type="🆔 Telegram ID",
         search_value=result,

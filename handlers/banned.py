@@ -242,7 +242,7 @@ async def safe_callback_answer(
 
 
 # =========================
-# БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ
+# ОТПРАВКА ОТДЕЛЬНОГО СООБЩЕНИЯ
 # =========================
 
 async def safe_edit_banned_message(
@@ -251,38 +251,12 @@ async def safe_edit_banned_message(
     keyboard: InlineKeyboardMarkup,
 ) -> None:
 
-    if callback.message is None:
-        await callback.bot.send_message(
-            chat_id=callback.from_user.id,
-            text=text,
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
-        return
-
-    try:
-        await callback.message.edit_text(
-            text=text,
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
-
-    except TelegramBadRequest as error:
-        error_text = str(error).lower()
-
-        if "message is not modified" in error_text:
-            return
-
-        if "message to edit not found" in error_text:
-            await callback.bot.send_message(
-                chat_id=callback.from_user.id,
-                text=text,
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
-            return
-
-        raise
+    await callback.bot.send_message(
+        chat_id=callback.from_user.id,
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
 
 
 # =========================
