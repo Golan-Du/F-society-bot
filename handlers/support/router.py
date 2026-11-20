@@ -15,7 +15,8 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
-from admin_config import ADMIN_IDS
+from admin_config import ADMIN_IDS, CREATOR_ID
+
 from repositories.support_repository import (
     create_support_ticket,
     get_ticket_statistics,
@@ -32,6 +33,12 @@ from repositories.support_repository import (
     assign_ticket_admin,
     add_ticket_message,
     update_ticket_status,
+    close_ticket,
+    request_ticket_transfer,
+    respond_ticket_transfer,
+    force_reassign_ticket,
+    get_pending_ticket_transfers,
+    get_ticket_transfer_request,
 )
 
 from .states import SupportState
@@ -260,6 +267,7 @@ def get_ticket_card_keyboard(
                     callback_data=f"ticket:assign:{ticket_id}",
                 )
             ])
+
         elif assigned_admin_id == current_admin_id:
             buttons.append([
                 InlineKeyboardButton(
@@ -267,12 +275,29 @@ def get_ticket_card_keyboard(
                     callback_data=f"ticket:reply:{ticket_id}",
                 )
             ])
+
             buttons.append([
                 InlineKeyboardButton(
                     text="🔒 Закрыть тикет",
                     callback_data=f"ticket:close:{ticket_id}",
                 )
             ])
+
+        else:
+            buttons.append([
+                InlineKeyboardButton(
+                    text="🔁 Запросить передачу",
+                    callback_data=f"ticket:transfer_request:{ticket_id}",
+                )
+            ])
+
+            if current_admin_id == CREATOR_ID:
+                buttons.append([
+                    InlineKeyboardButton(
+                        text="⚡ Забрать тикет себе",
+                        callback_data=f"ticket:force_transfer:{ticket_id}",
+                    )
+                ])
 
     buttons.append([
         InlineKeyboardButton(
@@ -752,6 +777,567 @@ async def assign_ticket_to_self(
         await callback.answer(
             "Внутренняя ошибка.",
             show_alert=True,
+        )
+        
+        
+# =========================
+# ПЕРЕДАЧА ТИКЕТОВ
+# =========================
+
+def get_transfer_decision_keyboard(
+    request_id: int,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Принять",
+                    callback_data=f"ticket:transfer_accept:{request_id}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"ticket:transfer_reject:{request_id}",
+                ),
+            ]
+        ]
+    )
+
+
+async def send_ticket_card(
+    message: Message,
+    ticket_id: int,
+    current_admin_id: int,
+) -> None:
+
+    ticket = await get_support_ticket(ticket_id)
+
+    if ticket is None:
+        await message.answer("⚠️ Тикет не найден.")
+        return
+
+    messages = await get_ticket_messages(ticket_id)
+
+    chunks = build_ticket_card_text(
+        ticket,
+        messages,
+    )
+
+    for index, chunk in enumerate(chunks):
+        await message.answer(
+            chunk,
+            parse_mode="HTML",
+            reply_markup=(
+                get_ticket_card_keyboard(
+                    ticket_id=ticket_id,
+                    assigned_admin_id=ticket["assigned_admin_id"],
+                    status=ticket["status"],
+                    current_admin_id=current_admin_id,
+                )
+                if index == len(chunks) - 1
+                else None
+            ),
+        )
+
+
+@router.callback_query(
+    F.data.startswith("ticket:transfer_request:")
+)
+async def create_ticket_transfer_request(
+    callback: CallbackQuery,
+) -> None:
+
+    admin_id = callback.from_user.id
+
+    if admin_id not in ADMIN_IDS:
+        await callback.answer(
+            "Недостаточно прав.",
+            show_alert=True,
+        )
+        return
+
+    if not await check_callback_cooldown(callback):
+        return
+
+    try:
+        ticket_id = int(callback.data.split(":")[2])
+
+        if ticket_id < 1:
+            raise ValueError
+
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некорректный номер тикета.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        result, request_id = await request_ticket_transfer(
+            ticket_id=ticket_id,
+            admin_id=admin_id,
+        )
+
+    except Exception:
+        logger.exception(
+            "Ошибка запроса передачи тикета #%s",
+            ticket_id,
+        )
+        await callback.answer(
+            "Внутренняя ошибка.",
+            show_alert=True,
+        )
+        return
+
+    messages = {
+        "ticket_not_found": "Тикет не найден.",
+        "closed_ticket": "Тикет уже закрыт.",
+        "not_assigned": "У тикета нет владельца.",
+        "already_owner": "Вы уже владелец тикета.",
+        "transfer_pending": "Запрос передачи уже существует.",
+        "permission_denied": "Недостаточно прав.",
+    }
+
+    if result in messages:
+        await callback.answer(
+            messages[result],
+            show_alert=True,
+        )
+        return
+
+    if result != "requested":
+        await callback.answer(
+            "Не удалось создать запрос.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer(
+        "Запрос отправлен владельцу."
+    )
+
+    ticket = await get_support_ticket(ticket_id)
+
+    if ticket is None:
+        return
+
+    owner_id = ticket["assigned_admin_id"]
+
+    if owner_id is None:
+        return
+
+    try:
+        await callback.bot.send_message(
+            chat_id=owner_id,
+            text=(
+                f"🔁 <b>Запрос передачи тикета #{ticket_id}</b>\n\n"
+                f"Администратор <code>{admin_id}</code> "
+                "хочет получить этот тикет.\n\n"
+                "Вы можете принять или отклонить запрос."
+            ),
+            parse_mode="HTML",
+            reply_markup=get_transfer_decision_keyboard(
+                request_id
+            ),
+        )
+
+        if isinstance(callback.message, Message):
+            await callback.message.answer(
+                f"📨 Запрос передачи тикета #{ticket_id} "
+                "отправлен его владельцу."
+            )
+
+    except Exception:
+        logger.exception(
+            "Не удалось отправить запрос передачи владельцу тикета #%s",
+            ticket_id,
+        )
+
+        await callback.bot.send_message(
+            chat_id=admin_id,
+            text=(
+                f"⚠️ Запрос #{request_id} сохранён, "
+                "но уведомление владельцу отправить не удалось."
+            ),
+        )
+
+
+@router.callback_query(
+    F.data.startswith("ticket:transfer_accept:")
+)
+async def accept_ticket_transfer(
+    callback: CallbackQuery,
+) -> None:
+
+    admin_id = callback.from_user.id
+
+    if admin_id not in ADMIN_IDS:
+        await callback.answer(
+            "Недостаточно прав.",
+            show_alert=True,
+        )
+        return
+
+    if not await check_callback_cooldown(callback):
+        return
+
+    try:
+        request_id = int(callback.data.split(":")[2])
+
+        if request_id < 1:
+            raise ValueError
+
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некорректный запрос.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        result = await respond_ticket_transfer(
+            request_id=request_id,
+            admin_id=admin_id,
+            decision="accept",
+        )
+
+    except Exception:
+        logger.exception(
+            "Ошибка принятия запроса передачи #%s",
+            request_id,
+        )
+        await callback.answer(
+            "Внутренняя ошибка.",
+            show_alert=True,
+        )
+        return
+
+    if result != "accepted":
+        error_messages = {
+            "request_not_found": "Запрос не найден.",
+            "permission_denied": "Этот запрос адресован другому администратору.",
+            "request_not_pending": "Запрос уже обработан.",
+            "ticket_not_found": "Тикет не найден.",
+            "closed_ticket": "Тикет закрыт. Запрос отменён.",
+            "ownership_changed": "Владелец тикета уже изменился.",
+            "transfer_failed": "Не удалось передать тикет.",
+        }
+
+        await callback.answer(
+            error_messages.get(
+                result,
+                "Не удалось принять запрос.",
+            ),
+            show_alert=True,
+        )
+        return
+
+    await callback.answer(
+        "Передача принята."
+    )
+
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=None
+            )
+        except TelegramBadRequest:
+            pass
+
+    # Получаем тикет после передачи.
+    # Теперь его владельцем является инициатор запроса.
+    try:
+        ticket = await get_support_ticket(
+            int(
+                callback.data.split(":")[2]
+            )
+        )
+    except Exception:
+        ticket = None
+
+    # request_id не равен ticket_id.
+    # Поэтому определяем тикет через список ожидавших запросов
+    # здесь нельзя — отдельный метод получения запроса нужен.
+    # Уведомление инициатору добавим после его получения
+    # из репозитория на следующем этапе.
+
+
+@router.callback_query(
+    F.data.startswith("ticket:transfer_reject:")
+)
+async def reject_ticket_transfer(
+    callback: CallbackQuery,
+) -> None:
+
+    admin_id = callback.from_user.id
+
+    if admin_id not in ADMIN_IDS:
+        await callback.answer(
+            "Недостаточно прав.",
+            show_alert=True,
+        )
+        return
+
+    if not await check_callback_cooldown(callback):
+        return
+
+    try:
+        request_id = int(callback.data.split(":")[2])
+
+        if request_id < 1:
+            raise ValueError
+
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некорректный запрос.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        result = await respond_ticket_transfer(
+            request_id=request_id,
+            admin_id=admin_id,
+            decision="reject",
+        )
+
+    except Exception:
+        logger.exception(
+            "Ошибка отклонения запроса передачи #%s",
+            request_id,
+        )
+        await callback.answer(
+            "Внутренняя ошибка.",
+            show_alert=True,
+        )
+        return
+
+    if result != "rejected":
+        error_messages = {
+            "request_not_found": "Запрос не найден.",
+            "permission_denied": "Этот запрос адресован другому администратору.",
+            "request_not_pending": "Запрос уже обработан.",
+            "ticket_not_found": "Тикет не найден.",
+            "ownership_changed": "Владелец тикета уже изменился.",
+        }
+
+        await callback.answer(
+            error_messages.get(
+                result,
+                "Не удалось отклонить запрос.",
+            ),
+            show_alert=True,
+        )
+        return
+
+    await callback.answer(
+        "Запрос отклонён."
+    )
+
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=None
+            )
+        except TelegramBadRequest:
+            pass
+
+
+@router.callback_query(
+    F.data.startswith("ticket:force_transfer:")
+)
+async def force_ticket_transfer(
+    callback: CallbackQuery,
+) -> None:
+
+    admin_id = callback.from_user.id
+
+    if admin_id != CREATOR_ID:
+        await callback.answer(
+            "Эта функция доступна только создателю.",
+            show_alert=True,
+        )
+        return
+
+    if not await check_callback_cooldown(callback):
+        return
+
+    try:
+        ticket_id = int(callback.data.split(":")[2])
+
+        if ticket_id < 1:
+            raise ValueError
+
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некорректный номер тикета.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        result = await force_reassign_ticket(
+            ticket_id=ticket_id,
+            admin_id=admin_id,
+        )
+
+    except Exception:
+        logger.exception(
+            "Ошибка принудительной передачи тикета #%s",
+            ticket_id,
+        )
+        await callback.answer(
+            "Внутренняя ошибка.",
+            show_alert=True,
+        )
+        return
+
+    error_messages = {
+        "permission_denied": "Недостаточно прав.",
+        "ticket_not_found": "Тикет не найден.",
+        "closed_ticket": "Тикет уже закрыт.",
+        "not_assigned": "Тикет ещё никому не назначен.",
+        "already_owner": "Тикет уже назначен вам.",
+        "transfer_failed": "Не удалось переназначить тикет.",
+    }
+
+    if result in error_messages:
+        await callback.answer(
+            error_messages[result],
+            show_alert=True,
+        )
+        return
+
+    if result != "transferred":
+        await callback.answer(
+            "Не удалось передать тикет.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer(
+        "Тикет переназначен вам."
+    )
+
+    if isinstance(callback.message, Message):
+        await callback.message.answer(
+            f"⚡ Тикет #{ticket_id} переназначен вам."
+        )
+
+        await send_ticket_card(
+            callback.message,
+            ticket_id,
+            admin_id,
+        )
+        
+        
+@router.callback_query(F.data.startswith("ticket:close:"))
+async def close_support_ticket(
+    callback: CallbackQuery,
+) -> None:
+
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer(
+            "Недостаточно прав.",
+            show_alert=True,
+        )
+        return
+
+    if not await check_callback_cooldown(callback):
+        return
+
+    try:
+        ticket_id = int(callback.data.split(":")[2])
+
+        if ticket_id < 1:
+            raise ValueError
+
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Некорректный номер тикета.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        result = await close_ticket(
+            ticket_id=ticket_id,
+            admin_id=callback.from_user.id,
+        )
+
+    except Exception:
+        logger.exception(
+            "Ошибка закрытия тикета #%s",
+            ticket_id,
+        )
+        await callback.answer(
+            "Внутренняя ошибка.",
+            show_alert=True,
+        )
+        return
+
+    error_messages = {
+        "ticket_not_found": "Тикет не найден.",
+        "already_closed": "Тикет уже закрыт.",
+        "not_assigned": "Этот тикет вам не назначен.",
+        "permission_denied": "Недостаточно прав.",
+    }
+
+    if result in error_messages:
+        await callback.answer(
+            error_messages[result],
+            show_alert=True,
+        )
+        return
+
+    if result != "closed":
+        await callback.answer(
+            "Не удалось закрыть тикет.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer("Тикет закрыт.")
+
+    if not isinstance(callback.message, Message):
+        return
+
+    try:
+        await callback.message.answer(
+            f"🔒 Тикет #{ticket_id} успешно закрыт."
+        )
+
+        ticket = await get_support_ticket(ticket_id)
+
+        if ticket is None:
+            return
+
+        messages = await get_ticket_messages(ticket_id)
+
+        chunks = build_ticket_card_text(
+            ticket,
+            messages,
+        )
+
+        for index, chunk in enumerate(chunks):
+            await callback.message.answer(
+                chunk,
+                parse_mode="HTML",
+                reply_markup=(
+                    get_ticket_card_keyboard(
+                        ticket_id=ticket_id,
+                        assigned_admin_id=ticket["assigned_admin_id"],
+                        status=ticket["status"],
+                        current_admin_id=callback.from_user.id,
+                    )
+                    if index == len(chunks) - 1
+                    else None
+                ),
+            )
+
+    except Exception:
+        logger.exception(
+            "Тикет #%s закрыт, но не удалось обновить карточку.",
+            ticket_id,
         )
         
         

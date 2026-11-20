@@ -332,6 +332,43 @@ async def init_db() -> None:
             )
         """)
 
+        # Запросы на передачу тикетов между администраторами.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS support_ticket_transfer_requests (
+                request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                ticket_id INTEGER NOT NULL,
+
+                from_admin_id INTEGER NOT NULL,
+                to_admin_id INTEGER NOT NULL,
+
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (
+                        status IN (
+                            'pending',
+                            'accepted',
+                            'rejected',
+                            'cancelled'
+                        )
+                    ),
+
+                created_at TEXT NOT NULL,
+                responded_at TEXT,
+
+                FOREIGN KEY (ticket_id)
+                    REFERENCES support_tickets(ticket_id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        # Один активный запрос передачи на тикет.
+        await db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_ticket_transfer_pending
+            ON support_ticket_transfer_requests(ticket_id)
+            WHERE status = 'pending'
+        """)
+
         await db.commit()
 
 
